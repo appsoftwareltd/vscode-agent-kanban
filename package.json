@@ -1,0 +1,107 @@
+{
+    "name": "vscode-agent-kanban",
+    "displayName": "Agent Kanban",
+    "description": "An integrated Kanban board for managing coding agent tasks with persistent, version-controllable conversations.",
+    "version": "0.1.0",
+    "publisher": "appsoftwareltd",
+    "license": "Elastic-2.0",
+    "engines": {
+        "vscode": "^1.95.0"
+    },
+    "categories": [
+        "Other"
+    ],
+    "activationEvents": [
+        "onStartupFinished"
+    ],
+    "main": "./dist/extension.js",
+    "contributes": {
+        "viewsContainers": {
+            "activitybar": [
+                {
+                    "id": "agent-kanban",
+                    "title": "Agent Kanban",
+                    "icon": "images/kanban-icon.svg"
+                }
+            ]
+        },
+        "views": {
+            "agent-kanban": [
+                {
+                    "type": "webview",
+                    "id": "agentKanban.boardView",
+                    "name": "Board"
+                }
+            ]
+        },
+        "commands": [
+            {
+                "command": "agentKanban.openBoard",
+                "title": "Agent Kanban: Open Board"
+            },
+            {
+                "command": "agentKanban.newTask",
+                "title": "Agent Kanban: New Task"
+            }
+        ],
+        "configuration": {
+            "title": "Agent Kanban",
+            "properties": {
+                "agentKanban.userName": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Your display name for task conversations. This is stored locally and not committed to version control.",
+                    "scope": "application"
+                },
+                "agentKanban.enableLogging": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Enable diagnostic logging to .agentkanban/logs/. Rolling 10 MB files, max 5. Requires reload after changing.",
+                    "scope": "window"
+                }
+            }
+        },
+        "chatParticipants": [
+            {
+                "id": "agentKanban.chat",
+                "name": "kanban",
+                "fullName": "Agent Kanban",
+                "description": "Interact with Kanban board tasks",
+                "isSticky": false,
+                "commands": [
+                    {
+                        "name": "plan",
+                        "description": "Plan the current task"
+                    },
+                    {
+                        "name": "todo",
+                        "description": "Generate TODOs for the current task"
+                    },
+                    {
+                        "name": "implement",
+                        "description": "Implement the current task"
+                    }
+                ]
+            }
+        ]
+    },
+    "scripts": {
+        "vscode:prepublish": "npm run build",
+        "build": "node build.mjs",
+        "watch": "node build.mjs --watch",
+        "test": "vitest run",
+        "test:watch": "vitest",
+        "lint": "tsc --noEmit"
+    },
+    "devDependencies": {
+        "@types/node": "^20.11.0",
+        "@types/vscode": "^1.95.0",
+        "esbuild": "^0.24.0",
+        "typescript": "^5.7.0",
+        "vitest": "^3.0.0",
+        "yaml": "^2.7.0"
+    },
+    "dependencies": {
+        "yaml": "^2.7.0"
+    }
+}
