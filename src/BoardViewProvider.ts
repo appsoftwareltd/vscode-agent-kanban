@@ -71,9 +71,15 @@ export class BoardViewProvider implements vscode.WebviewViewProvider {
 
     private async handleMessage(message: any): Promise<void> {
         switch (message.type) {
-            case 'openTask':
-                vscode.commands.executeCommand('agentKanban.openTask', message.taskId);
+            case 'openTask': {
+                const task = this.taskStore.get(message.taskId);
+                if (task) {
+                    const taskUri = this.taskStore.getTaskUri(message.taskId);
+                    const doc = await vscode.workspace.openTextDocument(taskUri);
+                    await vscode.window.showTextDocument(doc);
+                }
                 break;
+            }
             case 'moveTask': {
                 const task = this.taskStore.get(message.taskId);
                 if (task) {
@@ -101,6 +107,10 @@ export class BoardViewProvider implements vscode.WebviewViewProvider {
                 break;
             }
             case 'removeLane': {
+                if (message.laneId === 'done') {
+                    vscode.window.showWarningMessage('The Done lane cannot be removed.');
+                    break;
+                }
                 const config = this.boardConfigStore.get();
                 config.lanes = config.lanes.filter(l => l.id !== message.laneId);
                 await this.boardConfigStore.update({ lanes: config.lanes });
@@ -143,12 +153,13 @@ export class BoardViewProvider implements vscode.WebviewViewProvider {
                 </div>
             `).join('');
 
+            const isDoneLane = lane.id === 'done';
             return `
                 <div class="lane" data-lane-id="${escapeHtml(lane.id)}">
                     <div class="lane-header">
                         <span class="lane-title" data-rename-lane-id="${escapeHtml(lane.id)}">${escapeHtml(lane.name)}</span>
                         <span class="lane-count">${laneTasks.length}</span>
-                        <button class="lane-remove" data-remove-lane-id="${escapeHtml(lane.id)}" title="Remove lane">&times;</button>
+                        ${isDoneLane ? '' : `<button class="lane-remove" data-remove-lane-id="${escapeHtml(lane.id)}" title="Remove lane">&times;</button>`}
                     </div>
                     <div class="lane-cards" data-lane-id="${escapeHtml(lane.id)}">
                         ${cardsHtml}

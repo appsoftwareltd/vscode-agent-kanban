@@ -17,16 +17,28 @@ const EventEmitter = class {
     dispose = () => { this.listeners = []; };
 };
 
+enum FileType {
+    Unknown = 0,
+    File = 1,
+    Directory = 2,
+    SymbolicLink = 64,
+}
+
 const workspace = {
     workspaceFolders: [{ uri: Uri.file('/test-workspace'), name: 'test', index: 0 }],
     fs: {
         readFile: async (_uri: any) => new Uint8Array(),
         writeFile: async (_uri: any, _content: Uint8Array) => { },
-        stat: async (_uri: any) => ({ type: 1, ctime: 0, mtime: 0, size: 0 }),
+        stat: async (_uri: any) => ({ type: FileType.File, ctime: 0, mtime: 0, size: 0 }),
         readDirectory: async (_uri: any) => [] as Array<[string, number]>,
         createDirectory: async (_uri: any) => { },
         delete: async (_uri: any) => { },
     },
+    asRelativePath: (uri: any) => {
+        const p = typeof uri === 'string' ? uri : (uri.fsPath || uri.path || '');
+        return p.replace(/.*\/test-workspace\//, '');
+    },
+    openTextDocument: async (_uri: any) => ({ uri: _uri }),
     getConfiguration: (_section?: string) => ({
         get: (_key: string, _defaultValue?: any) => _defaultValue,
         update: async (_key: string, _value: any) => { },
@@ -45,6 +57,7 @@ const window = {
     showErrorMessage: async (..._args: any[]) => undefined,
     showInputBox: async (_options?: any) => undefined,
     showWarningMessage: async (..._args: any[]) => undefined,
+    showTextDocument: async (_doc: any, _options?: any) => undefined,
     registerWebviewViewProvider: (_viewId: string, _provider: any) => ({ dispose: () => { } }),
     createWebviewPanel: (_viewType: string, _title: string, _showOptions: any, _options?: any) => ({
         webview: {
@@ -118,6 +131,7 @@ const LanguageModelChatMessage = {
 export {
     Uri,
     EventEmitter,
+    FileType,
     workspace,
     window,
     commands,

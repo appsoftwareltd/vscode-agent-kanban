@@ -1,15 +1,3 @@
-export interface Message {
-    role: 'user' | 'agent';
-    /** Display name of the human author (present when role === 'user') */
-    author?: string;
-    /** Agent provider identifier (present when role === 'agent') */
-    provider?: string;
-    /** The action that was requested (present on the initiating user message) */
-    action?: 'plan' | 'todo' | 'implement';
-    timestamp: string;
-    content: string;
-}
-
 export interface Task {
     id: string;
     title: string;
@@ -17,9 +5,6 @@ export interface Task {
     created: string;
     updated: string;
     description: string;
-    /** Optional model override — when set, uses this model instead of the default. */
-    model?: string;
-    conversation: Message[];
 }
 
 export interface LaneConfig {

@@ -1,10 +1,13 @@
 import * as vscode from 'vscode';
 import { parse, stringify } from 'yaml';
-import type { Task, Message } from './types';
+import type { Task } from './types';
 import type { LogService } from './LogService';
 import { NO_OP_LOGGER } from './LogService';
 
 const TASKS_DIR = '.agentkanban/tasks';
+
+/** Separator between YAML frontmatter and markdown body. */
+const FRONTMATTER_FENCE = '---';
 
 export class TaskStore {
     private tasks: Map<string, Task> = new Map();
@@ -32,12 +35,13 @@ export class TaskStore {
         try {
             const entries = await vscode.workspace.fs.readDirectory(this.tasksUri);
             for (const [name, type] of entries) {
-                if (type === vscode.FileType.File && name.endsWith('.yaml')) {
+                if (type === vscode.FileType.File && name.endsWith('.md') && name.startsWith('task_')) {
                     const uri = vscode.Uri.joinPath(this.tasksUri, name);
                     const content = await vscode.workspace.fs.readFile(uri);
                     const text = new TextDecoder().decode(content);
-                    const task = parse(text) as Task;
-                    if (task?.id) {
+                    const task = TaskStore.deserialise(text);
+                    if (task) {
+                        task.id = name.slice(0, -3);
                         this.tasks.set(task.id, task);
                     }
                 }
@@ -57,6 +61,17 @@ export class TaskStore {
         return this.tasks.get(id);
     }
 
+    /** Returns the URI for a task's markdown file. */
+    getTaskUri(id: string): vscode.Uri {
+        return vscode.Uri.joinPath(this.tasksUri, `${id}.md`);
+    }
+
+    /** Returns the URI for a task's todo file. */
+    getTodoUri(taskId: string): vscode.Uri {
+        const todoFilename = taskId.replace(/^task_/, 'todo_') + '.md';
+        return vscode.Uri.joinPath(this.tasksUri, todoFilename);
+    }
+
     async save(task: Task): Promise<void> {
         task.updated = new Date().toISOString();
         this.tasks.set(task.id, task);
@@ -65,8 +80,22 @@ export class TaskStore {
         } catch {
             // directory may already exist
         }
-        const uri = vscode.Uri.joinPath(this.tasksUri, `${task.id}.yaml`);
-        const content = new TextEncoder().encode(stringify(task, { lineWidth: 0 }));
+        const uri = this.getTaskUri(task.id);
+
+        // Preserve existing markdown body if the file already exists
+        let body = '\n## Conversation\n\n[user';
+        try {
+            const existing = await vscode.workspace.fs.readFile(uri);
+            const existingText = new TextDecoder().decode(existing);
+            const parsed = TaskStore.splitFrontmatter(existingText);
+            if (parsed.body) {
+                body = parsed.body;
+            }
+        } catch {
+            // file doesn't exist yet — use default body
+        }
+
+        const content = new TextEncoder().encode(TaskStore.serialise(task, body));
         await vscode.workspace.fs.writeFile(uri, content);
         this.logger.info('taskStore', `Saved task ${task.id}`);
         this._onDidChange.fire();
@@ -74,12 +103,19 @@ export class TaskStore {
 
     async delete(id: string): Promise<void> {
         this.tasks.delete(id);
-        const uri = vscode.Uri.joinPath(this.tasksUri, `${id}.yaml`);
+        const taskUri = this.getTaskUri(id);
         try {
-            await vscode.workspace.fs.delete(uri);
+            await vscode.workspace.fs.delete(taskUri);
             this.logger.info('taskStore', `Deleted task ${id}`);
         } catch {
             // file may not exist
+        }
+        const todoUri = this.getTodoUri(id);
+        try {
+            await vscode.workspace.fs.delete(todoUri);
+            this.logger.info('taskStore', `Deleted todo for ${id}`);
+        } catch {
+            // todo file may not exist
         }
         this._onDidChange.fire();
     }
@@ -94,8 +130,16 @@ export class TaskStore {
             created: now.toISOString(),
             updated: now.toISOString(),
             description: '',
-            conversation: [],
         };
+    }
+
+    /** Find tasks whose title contains the query (case-insensitive). Excludes tasks in the Done lane. */
+    findByTitle(query: string, excludeLane?: string): Task[] {
+        const q = query.toLowerCase();
+        return this.getAll().filter(t =>
+            t.title.toLowerCase().includes(q) &&
+            (!excludeLane || t.lane !== excludeLane),
+        );
     }
 
     /**
@@ -128,16 +172,68 @@ export class TaskStore {
             .replace(/_+$/, '');
     }
 
-    appendMessage(task: Task, message: Message): void {
-        task.conversation.push(message);
-        task.updated = new Date().toISOString();
+    /**
+     * Serialise a task to markdown with YAML frontmatter.
+     * The body is preserved as-is (conversation lives in markdown).
+     */
+    static serialise(task: Task, body?: string): string {
+        const frontmatter: Record<string, unknown> = {
+            title: task.title,
+            lane: task.lane,
+            created: task.created,
+            updated: task.updated,
+        };
+        if (task.description) {
+            frontmatter.description = task.description;
+        }
+        const yamlStr = stringify(frontmatter, { lineWidth: 0 }).trimEnd();
+        const mdBody = body ?? '\n## Conversation\n';
+        return `${FRONTMATTER_FENCE}\n${yamlStr}\n${FRONTMATTER_FENCE}\n${mdBody}`;
     }
 
-    static serialise(task: Task): string {
-        return stringify(task, { lineWidth: 0 });
+    /**
+     * Deserialise a markdown file with YAML frontmatter into a Task.
+     * Returns null if the frontmatter is missing or invalid.
+     */
+    static deserialise(text: string): Task | null {
+        const parsed = TaskStore.splitFrontmatter(text);
+        if (!parsed.frontmatter) {
+            return null;
+        }
+        try {
+            const data = parse(parsed.frontmatter) as Record<string, unknown>;
+            if (!data || typeof data.title !== 'string') {
+                return null;
+            }
+            return {
+                id: '', // Caller sets this from filename
+                title: data.title,
+                lane: (data.lane as string) ?? 'todo',
+                created: (data.created as string) ?? new Date().toISOString(),
+                updated: (data.updated as string) ?? new Date().toISOString(),
+                description: (data.description as string) ?? '',
+            };
+        } catch {
+            return null;
+        }
     }
 
-    static deserialise(text: string): Task {
-        return parse(text) as Task;
+    /** Split a markdown file into frontmatter and body. */
+    static splitFrontmatter(text: string): { frontmatter: string | null; body: string } {
+        if (!text.startsWith(FRONTMATTER_FENCE)) {
+            return { frontmatter: null, body: text };
+        }
+
+        const end = text.indexOf(`\n${FRONTMATTER_FENCE}`, FRONTMATTER_FENCE.length);
+        if (end === -1) {
+            return { frontmatter: null, body: text };
+        }
+
+        const frontmatter = text.slice(FRONTMATTER_FENCE.length + 1, end);
+        // Skip past \n---\n — the newline after closing fence is part of the
+        // fence line, not the body.  serialise() adds it back.
+        const bodyStart = end + FRONTMATTER_FENCE.length + 1;
+        const body = text[bodyStart] === '\n' ? text.slice(bodyStart + 1) : text.slice(bodyStart);
+        return { frontmatter, body };
     }
 }

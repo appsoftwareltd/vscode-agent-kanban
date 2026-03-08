@@ -5,24 +5,20 @@
 ```
 src/
 ├── extension.ts              # Extension entry point — activation, registration
-├── types.ts                  # Core type definitions (Task, Message, BoardConfig)
+├── types.ts                  # Core type definitions (Task, BoardConfig)
 ├── LogService.ts             # Pure Node.js rolling file logger
-├── TaskStore.ts              # YAML task file read/write/watch
+├── TaskStore.ts              # Markdown task file read/write/watch (YAML frontmatter)
 ├── BoardConfigStore.ts       # Board configuration persistence
 ├── BoardViewProvider.ts      # Sidebar webview — kanban board UI
-├── TaskDetailViewProvider.ts # Editor panel webview — task detail/conversation UI
 ├── userName.ts               # User display name management
 ├── agents/
-│   ├── AgentProvider.ts      # AgentProvider interface definition
-│   ├── CopilotChatProvider.ts # GitHub Copilot Chat Participant implementation
-│   └── tools.ts              # Tool definitions, path validation, tool executor
+│   └── ChatParticipant.ts    # Lightweight @kanban chat command router
 └── test/
     ├── __mocks__/vscode.ts   # VS Code API mock for unit tests
     ├── LogService.test.ts    # Log writing, rotation, no-op tests
-    ├── TaskStore.test.ts     # Task serialisation round-trip tests
+    ├── TaskStore.test.ts     # Frontmatter round-trip, slug, ID, findByTitle tests
     ├── BoardConfigStore.test.ts # Board config serialisation tests
-    ├── tools.test.ts         # Path validation, tool execution, sandbox tests
-    └── CopilotChatProvider.test.ts # AGENTS.md discovery, prompt construction tests
+    └── ChatParticipant.test.ts  # Command routing, task resolution, action tests
 ```
 
 ## Core Types
@@ -31,29 +27,16 @@ src/
 
 ```typescript
 interface Task {
-    id: string;           // Unique ID (task-<timestamp>-<random>)
+    id: string;           // e.g. task_20260308_143045123_abc123_my_task
     title: string;
     lane: string;         // Lane ID the task is in
     created: string;      // ISO 8601 timestamp
     updated: string;      // ISO 8601 timestamp (auto-updated on save)
     description: string;
-    model?: string;       // Optional language model override (per-task)
-    conversation: Message[];
 }
 ```
 
-### Message (`types.ts`)
-
-```typescript
-interface Message {
-    role: 'user' | 'agent';
-    author?: string;      // Human display name (role=user)
-    provider?: string;    // Agent provider name (role=agent)
-    action?: 'plan' | 'todo' | 'implement'; // Action on initiating message
-    timestamp: string;    // ISO 8601
-    content: string;
-}
-```
+Conversation history is stored in the markdown body of the task file (not in the Task interface). Uses `[user]:`/`[agent]:` markers.
 
 ### BoardConfig (`types.ts`)
 
@@ -73,17 +56,58 @@ interface LaneConfig {
 
 ### TaskStore (`TaskStore.ts`)
 
-- Reads/writes YAML files under `.agentkanban/tasks/<task-id>.yaml`
-- In-memory cache with `Map<string, Task>`
-- File watcher triggers `reload()` on external changes
-- Fires `onDidChange` event for UI refresh
-- Static `serialise()`/`deserialise()` methods for unit-testable YAML round-trips
-- Uses the `yaml` npm package (v2.x) for parsing/stringifying with `lineWidth: 0` (no wrapping)
+- Reads/writes `.md` files with YAML frontmatter under `.agentkanban/tasks/`
+- Task filenames: `task_YYYYMMDD_HHmmssfff_XXXXXX_slug.md` (ID derived from filename minus `.md`)
+- `reload()` scans for `task_*.md` files, parses YAML frontmatter only, derives ID from filename
+- `save()` preserves existing markdown body (conversation), only updates frontmatter
+- `createTask()` generates IDs via `generateId()` using timestamp + random + slugified title
+- `getTaskUri(id)` / `getTodoUri(taskId)` — construct URIs for task/todo files
+- `findByTitle(query, excludeLane?)` — case-insensitive title search, optionally filtering by lane
+- `delete()` removes both the task file and its associated `todo_*.md` file
+- Static methods: `serialise()`, `deserialise()`, `splitFrontmatter()`, `slugify()`, `generateId()`
+- `splitFrontmatter()` skips the `\n` immediately after the closing `---` fence to prevent blank-line accumulation on round-trips (since `serialise()` adds its own `\n` after `---`)
+- Uses the `yaml` npm package (v2.x) for frontmatter parsing/stringifying with `lineWidth: 0`
+- In-memory cache with `Map<string, Task>`, `onDidChange` event for UI refresh
+
+### Task File Format
+
+```markdown
+---
+title: Implement OAuth2
+lane: doing
+created: 2026-03-08T10:00:00.000Z
+updated: 2026-03-08T14:30:00.000Z
+description: OAuth2 integration for the API
+---
+
+## Conversation
+
+[user]: Let's plan the OAuth2 implementation...
+
+[agent]: Here's my analysis...
+```
+
+Frontmatter fields: `title` (required), `lane` (defaults to `todo`), `created`, `updated`, `description` (omitted if empty).
+
+### Todo File Format
+
+Created on demand by `/todo` command. Filename mirrors task: `todo_YYYYMMDD_HHmmssfff_XXXXXX_slug.md`.
+
+```markdown
+---
+task: task_20260308_143045123_abc123_oauth2
+---
+
+## TODO
+
+- [ ] Item one
+- [x] Item two (completed)
+```
 
 ### BoardConfigStore (`BoardConfigStore.ts`)
 
 - Reads/writes `.agentkanban/board.yaml`
-- Creates default config (3 lanes, empty base prompt) if file doesn't exist
+- Creates default config (3 lanes: Todo, Doing, Done; empty base prompt) if file doesn't exist
 - `update()` accepts partial config for incremental changes
 - Fires `onDidChange` event
 
@@ -94,147 +118,102 @@ interface LaneConfig {
 - Registered as `WebviewViewProvider` for the `agentKanban.boardView` sidebar view
 - Renders HTML with CSS variables mapped to VS Code theme tokens
 - Drag-and-drop via native HTML5 drag events
+- Card click opens the task's `.md` file directly via `vscode.workspace.openTextDocument()`
+- **Done lane protection**: Remove button hidden for the Done lane; `removeLane` handler blocks deletion with a warning
 - Communication via `postMessage`/`onDidReceiveMessage`:
-  - `newTask` — prompts for title, creates YAML file
-  - `openTask` — fires `agentKanban.openTask` command
-  - `moveTask` — updates task lane in YAML
+  - `newTask` — prompts for title, creates markdown file
+  - `openTask` — opens task `.md` file in editor
+  - `moveTask` — updates task lane in frontmatter
   - `addLane` / `removeLane` / `renameLane` — updates board config
-  - `deleteTask` — removes YAML file
+  - `deleteTask` — removes task and todo files
 - CSP: nonce-based script/style, `default-src 'none'`
 
-### TaskDetailViewProvider (`TaskDetailViewProvider.ts`)
+## Chat Participant
 
-- Creates `WebviewPanel` instances (editor tab) per task
-- Tracks open panels in `Map<string, WebviewPanel>`
-- Shows: editable title, description, lane selector, conversation thread, message input
-- Action bar: Plan / Todo / Implement buttons set the current action mode
-- Send triggers agent execution → streams response chunks to webview → saves to YAML
-- Ctrl+Enter keyboard shortcut for send
+### ChatParticipant (`agents/ChatParticipant.ts`)
 
-## Agent Integration
+Lightweight `@kanban` chat participant that routes commands to task markdown files. Does **not** run its own LLM loop — all agent work is handled by Copilot's native agent mode.
 
-### AgentProvider Interface (`agents/AgentProvider.ts`)
+#### Command Routing
 
-```typescript
-interface TaskContext {
-    task: Task;
-    conversation: Message[];
-    boardConfig: BoardConfig;
-    action: 'plan' | 'todo' | 'implement';
-    userMessage: string;
-}
+| Command | Handler | Description |
+|---------|---------|-------------|
+| `/new` | `handleNew()` | Creates a new task file, reports its path |
+| `/task` | `handleTask()` | Selects a task, opens file in editor, outputs context |
+| (none) | default | Shows available commands; handles verb followup clicks |
 
-interface AgentProvider {
-    readonly name: string;
-    execute(context: TaskContext): AsyncIterable<string>;
-}
-```
+#### Task Resolution
 
-### CopilotChatProvider (`agents/CopilotChatProvider.ts`)
+`resolveTaskFromPrompt(prompt)` matches the prompt against active (non-Done) task titles:
 
-- Implements `AgentProvider` using the VS Code Language Model API (`vscode.lm`)
-- Registered as Chat Participant `agentKanban.chat` with name `@kanban`
-- Slash commands: `/plan`, `/todo`, `/implement`
-- **AGENTS.md auto-discovery**: On activation, scans workspace for instruction files in priority order: `AGENTS.md`, `.github/copilot-instructions.md`, `.github/AGENTS.md`, `CLAUDE.md`. First found is loaded and prepended to the system prompt. Content is cached after first load.
-- **Model resolution**: Priority chain — task-level `model` override → `agentKanban.defaultModel` setting → first available model from `vscode.lm.selectChatModels()`
-- Prompt construction layers:
-  1. Agent instruction file content (if discovered)
-  2. Board base prompt
-  3. Action-specific system instruction
-  4. Task title + description
-  5. Full conversation history (user messages prefixed with `[author]:`)
-  6. Current user message
-- **Agentic loop** (implement mode): Uses `response.stream` with `TOOL_DEFINITIONS` (6 tools). When the model returns `LanguageModelToolCallPart`, executes the tool via `ToolExecutor`, feeds the result back, and loops until the model responds with text only.
-- **Read-only tools** (plan/todo modes): Uses `response.stream` with `READ_ONLY_TOOLS` (readFile, listFiles, searchFiles) — model can read and search the codebase but cannot modify it.
-- `handleChatRequest()` for Chat Participant invocations — appends both user and agent messages to YAML
-- `execute()` for webview invocations — returns `AsyncIterable<string>` chunks (including tool status messages)
-- `buildChatMessages()` is public for unit testing
+1. **Exact prefix match** (case-insensitive) — prompt starts with task title
+2. **Contains match** — longest title found anywhere in prompt
+3. **Partial first-word match** — first word of prompt appears in a task title
 
-### Tool Calling (`agents/tools.ts`)
+Returns `{ task, freeText }` where `freeText` is any remaining prompt after the matched title.
 
-The agent can read/write files and run commands during **implement** mode, and has read-only access in **plan** and **todo** modes. Tools are implemented as private tool definitions passed to the Language Model API, not registered globally.
+#### /task Flow
 
-#### Available Tools
+1. If no prompt: lists active tasks
+2. Resolve task from prompt via `resolveTaskFromPrompt()`
+3. Ensure `.agentkanban/INSTRUCTION.md` exists (copy from bundled template if missing)
+4. Set `lastSelectedTaskTitle` for verb followups
+5. Open the task file in the editor via `vscode.window.showTextDocument()`
+6. Output INSTRUCTION.md reference, task title, task file path
+7. Guide user to type `plan`, `todo`, or `implement` in Copilot agent mode
 
-| Tool | Description | Confirmation | Modes |
-|------|-------------|--------------|-------|
-| `readFile(path)` | Read file contents relative to workspace root | No | All |
-| `writeFile(path, content)` | Create or overwrite a file | Yes (modal dialog) | Implement |
-| `listFiles(pattern)` | List files matching a glob pattern | No | All |
-| `runTerminal(command)` | Run a shell command and return output | Yes (modal dialog) | Implement |
-| `editFile(path, oldText, newText)` | Surgical text replacement — `oldText` must appear exactly once | Yes (modal dialog) | Implement |
-| `searchFiles(query, pattern?, isRegex?)` | Search file contents across workspace, returns matching lines with locations | No | All |
+#### /new Flow
 
-`READ_ONLY_TOOLS` exports the subset: readFile, listFiles, searchFiles. `TOOL_DEFINITIONS` exports all 6.
+1. Clear `lastSelectedTaskTitle` (resets verb followups)
+2. Ensure `.agentkanban/INSTRUCTION.md` exists
+3. Create the task file
+4. Report path and suggest `@kanban /task <title>` to start working
 
-#### Path Sandboxing
+#### Verb Handling (Default Case)
 
-- All paths are resolved relative to the workspace root via `validatePath()`
-- Path traversal (`../`) is blocked by default — resolved path must remain under workspace root
-- Setting `agentKanban.allowExternalPaths` (boolean, default `false`) unlocks external paths for monorepo setups
-- `validatePath()` normalises paths and checks containment after resolution
+When the default handler receives a prompt matching a verb (`plan`, `todo`, `implement`) and `lastSelectedTaskTitle` is set, it shows a guidance message reminding the user to type the verb in Copilot agent mode (without `@kanban`). This handles clicks on verb followup buttons.
 
-#### Guardrails
+### Helper: `getActiveTaskTitles()`
 
-- **Confirmation prompts**: `writeFile` and `runTerminal` show a modal VS Code dialog ("Allow" / "Deny") before execution
-- **Rate limiting**: Maximum 20 tool calls per agent turn (prevents infinite loops)
-- **Output caps**: File reads capped at 50,000 chars, terminal output at 10,000 chars
-- **Terminal timeout**: Commands time out after 30 seconds
+Returns titles of all non-Done tasks. Used in the default (no command) response to show available tasks.
 
-#### Agentic Loop Flow
+### INSTRUCTION.md — Agent Context Injection
 
-```
-User sends message (implement mode)
-  → buildChatMessages() with TOOL_DEFINITIONS
-  → model.sendRequest(messages, { tools, toolMode: Auto })
-  → iterate response.stream
-    → LanguageModelTextPart → yield text to webview
-    → LanguageModelToolCallPart → collect all tool calls for this turn
-  → If tool calls present:
-    → Append Assistant message (text + tool calls) to messages
-    → Execute each tool via ToolExecutor
-    → Yield status messages (📁 Read file: ..., ✅ Written: ...)
-    → Append User message with LanguageModelToolResultPart for each call
-    → model.sendRequest(messages, { tools }) again → loop
-  → Until model responds with text only (no tool calls)
-```
+`ensureInstructionFile()` checks for `.agentkanban/INSTRUCTION.md` in the workspace. If missing, copies the bundled template from `assets/INSTRUCTION.md` (shipped with the extension). Called at the start of every action command.
 
-### Action Instructions
+The instruction file reference is injected into the chat response as: `Read .agentkanban/INSTRUCTION.md first for workflow instructions.`
 
-| Action | System Instruction | Tools |
-|--------|--------------------| ------|
-| `plan` | Discuss, analyse, plan. No code or TODOs. Read-only tools available for codebase exploration. | readFile, listFiles, searchFiles |
-| `todo` | Generate/update actionable TODO list in markdown checkbox format. Read-only tools available. | readFile, listFiles, searchFiles |
-| `implement` | Write code following pragmatic principles. Use tools to read/write files and run commands. | readFile, writeFile, listFiles, runTerminal, editFile, searchFiles |
+The file is editable by the user. Deleting it causes it to be re-created from the template on next command use.
 
-### Model Selection
+### Followup Provider
 
-Model resolution follows a priority chain:
+`getFollowups()` provides context-aware suggestions:
 
-1. **Per-task override**: `task.model` field in YAML (set via model dropdown in task detail UI)
-2. **Default setting**: `agentKanban.defaultModel` (string, workspace-scoped)
-3. **Auto-detect**: First model returned by `vscode.lm.selectChatModels()`
+- **After `/task` selects a task**: Returns verb followups — Plan, Todo, Implement — labelled with the selected task title. Tracks state via `lastSelectedTaskTitle`. When clicked, these go through the default handler which shows guidance.
+- **Otherwise**: Returns a single `ChatFollowup` suggesting `/task` for the most recently updated active (non-Done) task.
 
-The task detail webview shows a model dropdown populated by `vscode.lm.selectChatModels()`. Selecting a model saves it to the task's YAML file. An empty selection clears the override, falling back to the default.
+Tasks are sorted by `updated` timestamp (descending), falling back to `created`.
 
-### AGENTS.md Auto-Discovery
+Registered on the chat participant in `extension.ts` via `participant.followupProvider`.
 
-On extension activation, `loadAgentInstructions()` scans the workspace root for instruction files in priority order:
+## Extension Entry Point (`extension.ts`)
 
-1. `AGENTS.md`
-2. `.github/copilot-instructions.md`
-3. `.github/AGENTS.md`
-4. `CLAUDE.md`
+### Activation
 
-The first file found is read and its content is prepended to the system prompt (before the board base prompt) in `buildChatMessages()`. The content is cached — call `loadAgentInstructions()` again to refresh.
+1. Resolve workspace folder
+2. Initialise logger (if `enableLogging` or `AGENT_KANBAN_DEBUG`)
+3. Create and init `TaskStore`, `BoardConfigStore`
+4. Register `BoardViewProvider` for sidebar
+5. Register `ChatParticipant` as `@kanban` with followup provider
+6. Register commands: `openTask`, `resetMemory`
+7. Create file watchers: `.agentkanban/tasks/**/*.md` and `.agentkanban/board.yaml`
 
-## Multi-User Support
+### Commands
 
-- `agentKanban.userName` setting scoped to `application` (local, not workspace)
-- `ensureUserName()` prompts on first use if not set
-- `author` field on user messages, `provider` field on agent messages
-- Conversation is append-only — minimises merge conflicts when syncing via VC
-- File watcher detects external YAML changes and refreshes UI
+| Command | Description |
+|---------|-------------|
+| `agentKanban.openTask` | Opens a task's `.md` file in the editor |
+| `agentKanban.resetMemory` | Resets `.agentkanban/memory.md` to `# Memory\n` |
 
 ## Build System
 
@@ -254,13 +233,13 @@ The first file found is read and its content is prepended to the system prompt (
 
 ### LogService (`LogService.ts`)
 
-Pure Node.js rolling file logger with no VS Code dependency. Adapted from the `as-notes` extension.
+Pure Node.js rolling file logger with no VS Code dependency.
 
 - **Log file**: `.agentkanban/logs/agent-kanban.log`
 - **Rolling**: When file exceeds 10 MB, rotates to `agent-kanban.1.log` ... `agent-kanban.5.log`; oldest is deleted
 - **Log levels**: `INFO`, `WARN`, `ERROR`
 - **API**: `info(tag, message)`, `warn(tag, message)`, `error(tag, message)`, `time(tag, label)` (returns timer callback)
-- **No-op mode**: `NO_OP_LOGGER` singleton — all methods are no-ops with negligible overhead when logging is disabled
+- **No-op mode**: `NO_OP_LOGGER` singleton — all methods are no-ops when logging is disabled
 
 ### Activation
 
@@ -274,8 +253,7 @@ All services accept an optional `logger?: LogService` constructor parameter, def
 - `TaskStore` — task file CRUD, cache reload
 - `BoardConfigStore` — config loading/saving
 - `BoardViewProvider` — webview lifecycle, message handling
-- `TaskDetailViewProvider` — panel lifecycle, agent invocations
-- `CopilotChatProvider` — model selection, prompt construction, streaming
+- `ChatParticipant` — command routing, task resolution
 
 ### Tag Convention
 
@@ -285,21 +263,13 @@ All services accept an optional `logger?: LogService` constructor parameter, def
 | `taskStore` | Task CRUD operations |
 | `boardConfig` | Board config operations |
 | `boardView` | Board webview events |
-| `taskDetail` | Task detail webview events |
-| `copilot` | Copilot Chat provider operations |
-| `tools` | Tool execution, path validation |
+| `chatParticipant` | Chat participant command handling |
 
 ### Log Format
 
 ```
 [2026-03-08T14:30:45.123Z] [INFO] taskStore: Loaded 12 tasks
-[2026-03-08T14:30:46.001Z] [WARN] copilot: No language model available
+[2026-03-08T14:30:46.001Z] [INFO] chatParticipant: /plan on task: task_001 (My Task)
 ```
 
 Note: `.agentkanban/logs/` should be added to `.gitignore` — logs are not intended for version control.
-
-## Future: Token Management
-
-- Conversation summary: user-triggered condensation of older messages
-- Smart truncation: description + summary + last N messages
-- UI warning when conversation approaches token limits

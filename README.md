@@ -1,81 +1,95 @@
 # Agent Kanban
 
-A VS Code extension providing an integrated Kanban board for managing coding agent tasks. Tasks follow a **plan → todo → implement** workflow, with persistent, version-controllable conversations stored as YAML files.
+A VS Code extension providing an integrated Kanban board for managing coding agent tasks. Tasks follow a **plan → todo → implement** workflow, with conversations stored as structured markdown files that are fully version-controllable.
+
+Agent Kanban references it's own instruction set, so it doesn't interfere with your existing agents files (e.g. AGENTS.md, skills etc).
+
+**Create tasks on the Kanban board and then plan and converse with your agent in the task markdown file, giving you a permanent task history that's editable, resistant to context bloat and persists after clearing chat context.**
 
 ## Features
 
 - **Kanban Board** — Visual board with customisable lanes (default: Todo, Doing, Done). Drag-and-drop task cards between lanes.
-- **Task Conversations** — Each task has a conversation thread where users and AI agents collaborate. Messages are stored per-task in YAML files.
-- **Agent Integration** — Built-in GitHub Copilot Chat Participant (`@kanban`) with plan/todo/implement slash commands. Agents receive full task conversation history as context.
-- **Multi-User** — Multiple team members can converse on the same task via version control sync. Each user sets their display name locally.
-- **Version Control Friendly** — One YAML file per task under `.agentkanban/tasks/`. Board configuration in `.agentkanban/board.yaml`. Append-only conversations minimise merge conflicts.
-- **Pluggable Agent Providers** — `AgentProvider` interface designed for future CLI agent integration (Claude Code, Aider, etc.).
+- **Markdown Task Files** — Each task is a `.md` file with YAML frontmatter. Conversation history lives in the markdown body using `[user]:`/`[agent]:` markers — directly readable and editable.
+- **Lightweight Chat Participant** — `@kanban` in Copilot Chat routes commands to task files. Copilot's native agent mode handles all work (tool calling, diffs, terminal). No custom LLM loop.
+- **Plan → Todo → Implement Workflow** — Use `/task` to select a task, then type `plan`, `todo`, or `implement` (or combinations) naturally in Copilot agent mode. The workflow instructions live in `.agentkanban/INSTRUCTION.md`.
+- **Done Lane Protection** — The Done lane cannot be deleted. Completed tasks are excluded from command matching.
+- **Version Control Friendly** — One `.md` file per task, board config in YAML. Standard text files that diff/merge naturally.
 
 ## Getting Started
 
 1. Install the extension
-2. Set your display name when prompted (or via `Settings > Agent Kanban > User Name`)
-3. Click the Kanban icon in the Activity Bar to open the board
-4. Click **+ New Task** to create a task
-5. Click a task card to open the detail view
-6. Select an action (Plan / Todo / Implement) and send a message to the agent
+2. Click the Kanban icon in the Activity Bar to open the board
+3. Click **+ New Task** to create a task — or use `@kanban /new My Task` in chat
+4. Use `@kanban /task My Task` to select a task — this opens the task file and sets up context
+5. Type `plan`, `todo`, `implement` (or combinations) in Copilot agent mode to work on the task
 
 ## How It Works
 
 ### Task Lifecycle
 
-1. Create a task — it appears in the first lane (default: Todo)
-2. Open the task to set requirements and start a conversation
-3. Use **Plan** to discuss and analyse the task with the agent
-4. Use **Todo** to generate actionable TODO items
-5. Use **Implement** to have the agent write code
+1. Create a task via the board or `@kanban /new <title>` — it appears in the first lane (default: Todo)
+2. Use `@kanban /task <task name>` to select a task — this opens the task file in the editor and outputs workflow context
+3. Type `plan` in Copilot agent mode to discuss and plan the task
+4. Type `todo` to generate a TODO checklist
+5. Type `implement` to implement the task following the plan and TODOs
 6. Drag the card between lanes as work progresses
 
-### Agent Context
+You can also combine verbs (e.g. `todo implement`) and add additional context after the verb.
 
-When you send a message, the agent receives:
-- **Workspace instructions** — auto-discovered from `AGENTS.md`, `.github/copilot-instructions.md`, `.github/AGENTS.md`, or `CLAUDE.md` (first found wins)
-- The board's base prompt (configurable in `.agentkanban/board.yaml`)
-- The task title and description
-- The full conversation history for the task
-- The action type (plan/todo/implement) with role-specific instructions
+### Chat Participant Commands
 
-The YAML conversation **is** the persistent context — every interaction rebuilds from it, so the agent always has the full picture.
+Use `@kanban` in the Copilot chat window:
 
-### Model Selection
+| Command | Usage | Description |
+|---------|-------|-------------|
+| `/new` | `@kanban /new <title>` | Create a new task |
+| `/task` | `@kanban /task <task name>` | Select a task to work on — opens the file, sets up context |
 
-Each task can use a different language model. Set a default with `agentKanban.defaultModel`, or use the model dropdown in the task detail view to override per-task. Leave both empty to auto-detect the first available model.
+Task matching is fuzzy and case-insensitive. Tasks in the Done lane are excluded from matching.
 
-### Tool Calling (Implement Mode)
+After selecting a task, type your verb (`plan`, `todo`, `implement`, or combinations) directly in Copilot agent mode. The workflow instructions in `.agentkanban/INSTRUCTION.md` tell the agent how to handle each verb.
 
-When you use **Implement**, the agent has access to tools that let it modify your codebase:
+After each command, a follow-up suggestion is shown for the most recently updated active task.
 
-| Tool | What it does |
-|------|-------------|
-| `readFile` | Read file contents |
-| `writeFile` | Create or overwrite files (requires your confirmation) |
-| `listFiles` | List files matching a pattern |
-| `runTerminal` | Run shell commands (requires your confirmation) || editFile | Surgical text replacement in a file (requires your confirmation) |
-| searchFiles | Search file contents across the workspace by text or regex |
+### Agent Instructions
 
-In **Plan** and **Todo** modes, the agent has read-only access (readFile, listFiles, searchFiles) so it can explore your codebase while planning.
-The agent operates within your workspace root by default. Destructive actions (file writes, terminal commands) always prompt for confirmation before executing. Set `agentKanban.allowExternalPaths` to `true` if you need the agent to access files outside the workspace (e.g. monorepo setups).
+On first use of any command, the extension creates `.agentkanban/INSTRUCTION.md` from a bundled template. This file tells the agent how the `.agentkanban` directory and workflow operate. Each command response instructs the agent to read this file before proceeding.
+
+You can edit `.agentkanban/INSTRUCTION.md` to customise the agent's behaviour. Delete it to reset to the default template on next use.
+
+### Task File Format
+
+```markdown
+---
+title: Implement OAuth2
+lane: doing
+created: 2026-03-08T10:00:00.000Z
+updated: 2026-03-08T14:30:00.000Z
+description: OAuth2 integration for the API
+---
+
+## Conversation
+
+[user]: Let's plan the OAuth2 implementation...
+
+[agent]: Here's my analysis of OAuth2 approaches...
+```
 
 ### Storage
 
 ```
 .agentkanban/
-  board.yaml          # Lane definitions, base prompt
+  board.yaml                                  # Lane definitions, base prompt
+  memory.md                                   # Global memory (reset via command)
+  INSTRUCTION.md                              # Agent workflow instructions (auto-created)
   tasks/
-    task-<id>.yaml    # One file per task with full conversation
+    task_20260308_143045123_abc123_title.md    # Task file (frontmatter + conversation)
+    todo_20260308_143045123_abc123_title.md    # Todo file (created on demand)
 ```
 
-### Chat Participant
+### Memory
 
-Use `@kanban` in the Copilot chat window with commands:
-- `@kanban /plan` — Plan the active task
-- `@kanban /todo` — Generate TODOs for the active task
-- `@kanban /implement` — Implement the active task
+A global memory file at `.agentkanban/memory.md` persists across tasks. Use the **Agent Kanban: Reset Memory** command to clear it.
 
 ## Configuration
 
@@ -83,7 +97,7 @@ Use `@kanban` in the Copilot chat window with commands:
 |---------|-------|-------------|
 | `agentKanban.userName` | Application (local) | Your display name for conversations |
 | `agentKanban.enableLogging` | Window | Enable diagnostic logging to `.agentkanban/logs/`. Requires reload. |
-| `agentKanban.allowExternalPaths` | Window | Allow the agent to read/write files outside the workspace root. || `agentKanban.defaultModel` | Window | Default language model ID. Leave empty to auto-detect. Can be overridden per-task via the model dropdown. |
+
 ## Development
 
 ```bash
@@ -95,3 +109,32 @@ npm test           # Run tests
 ```
 
 Press F5 in VS Code to launch the Extension Development Host.
+
+## Publishing
+
+Releases are published to the VS Code Marketplace manually, then a GitHub Release is created automatically when a version tag is pushed.
+
+**Step 1 - bump the version**
+
+Update `version` in `package.json` and add an entry to `CHANGELOG.md`.
+
+**Step 2 - publish to the VS Code Marketplace**
+
+```bash
+npm run build
+npx @vscode/vsce package
+npx @vscode/vsce login appsoftwareltd   # enter PAT token if auth expired
+npx @vscode/vsce publish
+```
+
+**Step 3 - tag and push**
+
+```bash
+git add .
+git commit -m "Release v0.1.8"  # change version
+git tag v0.1.8                  # change version
+git push origin main --tags
+```
+
+Pushing the tag triggers the [Release workflow](.github/workflows/release.yml), which creates a GitHub Release automatically with auto-generated release notes and the VS Code Marketplace install link.
+

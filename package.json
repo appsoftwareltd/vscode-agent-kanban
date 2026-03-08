@@ -1,10 +1,11 @@
 {
     "name": "vscode-agent-kanban",
     "displayName": "Agent Kanban",
-    "description": "An integrated Kanban board for managing coding agent tasks with persistent, version-controllable conversations.",
+    "description": "An integrated Kanban board for managing coding agent tasks with persistent, version-controllable markdown conversations.",
     "version": "0.1.0",
     "publisher": "appsoftwareltd",
     "license": "Elastic-2.0",
+    "icon": "images/icon.png",
     "engines": {
         "vscode": "^1.95.0"
     },
@@ -42,6 +43,10 @@
             {
                 "command": "agentKanban.newTask",
                 "title": "Agent Kanban: New Task"
+            },
+            {
+                "command": "agentKanban.resetMemory",
+                "title": "Agent Kanban: Reset Memory"
             }
         ],
         "configuration": {
@@ -58,18 +63,6 @@
                     "default": false,
                     "description": "Enable diagnostic logging to .agentkanban/logs/. Rolling 10 MB files, max 5. Requires reload after changing.",
                     "scope": "window"
-                },
-                "agentKanban.allowExternalPaths": {
-                    "type": "boolean",
-                    "default": false,
-                    "description": "Allow the agent to read/write files outside the workspace root (e.g. for monorepo setups).",
-                    "scope": "window"
-                },
-                "agentKanban.defaultModel": {
-                    "type": "string",
-                    "default": "",
-                    "description": "Default language model ID for agent interactions. Leave empty to use the first available model. Can be overridden per task.",
-                    "scope": "window"
                 }
             }
         },
@@ -82,16 +75,12 @@
                 "isSticky": false,
                 "commands": [
                     {
-                        "name": "plan",
-                        "description": "Plan the current task"
+                        "name": "new",
+                        "description": "Create a new task: @kanban /new <task title>"
                     },
                     {
-                        "name": "todo",
-                        "description": "Generate TODOs for the current task"
-                    },
-                    {
-                        "name": "implement",
-                        "description": "Implement the current task"
+                        "name": "task",
+                        "description": "Select a task to work on: @kanban /task <task name>"
                     }
                 ]
             }

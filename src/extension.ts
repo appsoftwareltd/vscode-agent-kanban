@@ -1,10 +1,9 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { BoardViewProvider } from './BoardViewProvider';
-import { TaskDetailViewProvider } from './TaskDetailViewProvider';
 import { TaskStore } from './TaskStore';
 import { BoardConfigStore } from './BoardConfigStore';
-import { CopilotChatProvider } from './agents/CopilotChatProvider';
+import { ChatParticipant } from './agents/ChatParticipant';
 import { ensureUserName } from './userName';
 import { LogService, NO_OP_LOGGER } from './LogService';
 
@@ -26,22 +25,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
     const taskStore = new TaskStore(workspaceFolder.uri, logger);
     const boardConfigStore = new BoardConfigStore(workspaceFolder.uri, logger);
-    const agentProvider = new CopilotChatProvider(logger);
-    agentProvider.setWorkspaceRoot(workspaceFolder.uri.fsPath);
-    agentProvider.loadAgentInstructions();
+    const chatParticipantHandler = new ChatParticipant(taskStore, boardConfigStore, context.extensionUri, logger);
 
     const boardViewProvider = new BoardViewProvider(
         context.extensionUri,
         taskStore,
         boardConfigStore,
-        logger,
-    );
-
-    const taskDetailViewProvider = new TaskDetailViewProvider(
-        context.extensionUri,
-        taskStore,
-        boardConfigStore,
-        agentProvider,
         logger,
     );
 
@@ -69,38 +58,59 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     );
 
     context.subscriptions.push(
-        vscode.commands.registerCommand('agentKanban.openTask', (taskId: string) => {
-            taskDetailViewProvider.openTask(taskId);
+        vscode.commands.registerCommand('agentKanban.openTask', async (taskId: string) => {
+            const task = taskStore.get(taskId);
+            if (task) {
+                const uri = taskStore.getTaskUri(taskId);
+                const doc = await vscode.workspace.openTextDocument(uri);
+                await vscode.window.showTextDocument(doc);
+            }
+        }),
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('agentKanban.resetMemory', async () => {
+            const memoryUri = vscode.Uri.joinPath(workspaceFolder.uri, '.agentkanban', 'memory.md');
+            try {
+                await vscode.workspace.fs.writeFile(memoryUri, new TextEncoder().encode('# Memory\n'));
+                vscode.window.showInformationMessage('Agent Kanban memory has been reset.');
+                logger.info('extension', 'Memory reset');
+            } catch (err: any) {
+                vscode.window.showErrorMessage(`Failed to reset memory: ${err.message}`);
+            }
         }),
     );
 
     // Register chat participant
-    const chatParticipant = vscode.chat.createChatParticipant(
+    const participant = vscode.chat.createChatParticipant(
         'agentKanban.chat',
-        async (request, context, response, token) => {
-            await agentProvider.handleChatRequest(request, context, response, token, taskStore, boardConfigStore);
+        async (request, chatContext, response, token) => {
+            await chatParticipantHandler.handleRequest(request, chatContext, response, token);
         },
     );
-    chatParticipant.iconPath = vscode.Uri.joinPath(context.extensionUri, 'images', 'kanban-icon.svg');
-    context.subscriptions.push(chatParticipant);
+    participant.iconPath = vscode.Uri.joinPath(context.extensionUri, 'images', 'kanban-icon.svg');
+    participant.followupProvider = {
+        provideFollowups() {
+            return chatParticipantHandler.getFollowups();
+        },
+    };
+    context.subscriptions.push(participant);
 
-    // File watcher for YAML changes
-    const watcher = vscode.workspace.createFileSystemWatcher(
-        new vscode.RelativePattern(workspaceFolder, '.agentkanban/**/*.yaml'),
+    // File watcher for task markdown files
+    const mdWatcher = vscode.workspace.createFileSystemWatcher(
+        new vscode.RelativePattern(workspaceFolder, '.agentkanban/tasks/**/*.md'),
     );
-    watcher.onDidChange(() => {
-        taskStore.reload();
-        boardViewProvider.refresh();
-    });
-    watcher.onDidCreate(() => {
-        taskStore.reload();
-        boardViewProvider.refresh();
-    });
-    watcher.onDidDelete(() => {
-        taskStore.reload();
-        boardViewProvider.refresh();
-    });
-    context.subscriptions.push(watcher);
+    mdWatcher.onDidChange(() => { taskStore.reload(); boardViewProvider.refresh(); });
+    mdWatcher.onDidCreate(() => { taskStore.reload(); boardViewProvider.refresh(); });
+    mdWatcher.onDidDelete(() => { taskStore.reload(); boardViewProvider.refresh(); });
+    context.subscriptions.push(mdWatcher);
+
+    // File watcher for board config
+    const yamlWatcher = vscode.workspace.createFileSystemWatcher(
+        new vscode.RelativePattern(workspaceFolder, '.agentkanban/board.yaml'),
+    );
+    yamlWatcher.onDidChange(() => { boardConfigStore.init(); boardViewProvider.refresh(); });
+    context.subscriptions.push(yamlWatcher);
 
     // Initialise stores
     await boardConfigStore.init();
