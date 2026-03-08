@@ -6,6 +6,14 @@
     "publisher": "appsoftwareltd",
     "license": "Elastic-2.0",
     "icon": "images/icon.png",
+    "homepage": "https://github.com/appsoftwareltd/vscode-agent-kanban",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/appsoftwareltd/vscode-agent-kanban.git"
+    },
+    "bugs": {
+        "url": "https://github.com/appsoftwareltd/vscode-agent-kanban/issues"
+    },
     "engines": {
         "vscode": "^1.95.0"
     },
