@@ -21,7 +21,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          MARKETPLACE="Install via the Visual Studio Marketplace: https://marketplace.visualstudio.com/items?itemName=AppSoftwareLtd.kingfisher"
+          MARKETPLACE="Install via the Visual Studio Marketplace: https://marketplace.visualstudio.com/items?itemName=AppSoftwareLtd.vscode-agent-kanban"
           GENERATED=$(gh api repos/${{ github.repository }}/releases/generate-notes \
             -f tag_name="${{ github.ref_name }}" \
             --jq '.body')
