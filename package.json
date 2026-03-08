@@ -58,6 +58,18 @@
                     "default": false,
                     "description": "Enable diagnostic logging to .agentkanban/logs/. Rolling 10 MB files, max 5. Requires reload after changing.",
                     "scope": "window"
+                },
+                "agentKanban.allowExternalPaths": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Allow the agent to read/write files outside the workspace root (e.g. for monorepo setups).",
+                    "scope": "window"
+                },
+                "agentKanban.defaultModel": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Default language model ID for agent interactions. Leave empty to use the first available model. Can be overridden per task.",
+                    "scope": "window"
                 }
             }
         },

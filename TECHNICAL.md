@@ -14,12 +14,15 @@ src/
 ├── userName.ts               # User display name management
 ├── agents/
 │   ├── AgentProvider.ts      # AgentProvider interface definition
-│   └── CopilotChatProvider.ts # GitHub Copilot Chat Participant implementation
+│   ├── CopilotChatProvider.ts # GitHub Copilot Chat Participant implementation
+│   └── tools.ts              # Tool definitions, path validation, tool executor
 └── test/
     ├── __mocks__/vscode.ts   # VS Code API mock for unit tests
     ├── LogService.test.ts    # Log writing, rotation, no-op tests
     ├── TaskStore.test.ts     # Task serialisation round-trip tests
-    └── BoardConfigStore.test.ts # Board config serialisation tests
+    ├── BoardConfigStore.test.ts # Board config serialisation tests
+    ├── tools.test.ts         # Path validation, tool execution, sandbox tests
+    └── CopilotChatProvider.test.ts # AGENTS.md discovery, prompt construction tests
 ```
 
 ## Core Types
@@ -34,6 +37,7 @@ interface Task {
     created: string;      // ISO 8601 timestamp
     updated: string;      // ISO 8601 timestamp (auto-updated on save)
     description: string;
+    model?: string;       // Optional language model override (per-task)
     conversation: Message[];
 }
 ```
@@ -131,23 +135,98 @@ interface AgentProvider {
 - Implements `AgentProvider` using the VS Code Language Model API (`vscode.lm`)
 - Registered as Chat Participant `agentKanban.chat` with name `@kanban`
 - Slash commands: `/plan`, `/todo`, `/implement`
+- **AGENTS.md auto-discovery**: On activation, scans workspace for instruction files in priority order: `AGENTS.md`, `.github/copilot-instructions.md`, `.github/AGENTS.md`, `CLAUDE.md`. First found is loaded and prepended to the system prompt. Content is cached after first load.
+- **Model resolution**: Priority chain — task-level `model` override → `agentKanban.defaultModel` setting → first available model from `vscode.lm.selectChatModels()`
 - Prompt construction layers:
-  1. Board base prompt
-  2. Action-specific system instruction
-  3. Task title + description
-  4. Full conversation history (user messages prefixed with `[author]:`)
-  5. Current user message
-- Uses `model.sendRequest()` for streaming responses
+  1. Agent instruction file content (if discovered)
+  2. Board base prompt
+  3. Action-specific system instruction
+  4. Task title + description
+  5. Full conversation history (user messages prefixed with `[author]:`)
+  6. Current user message
+- **Agentic loop** (implement mode): Uses `response.stream` with `TOOL_DEFINITIONS` (6 tools). When the model returns `LanguageModelToolCallPart`, executes the tool via `ToolExecutor`, feeds the result back, and loops until the model responds with text only.
+- **Read-only tools** (plan/todo modes): Uses `response.stream` with `READ_ONLY_TOOLS` (readFile, listFiles, searchFiles) — model can read and search the codebase but cannot modify it.
 - `handleChatRequest()` for Chat Participant invocations — appends both user and agent messages to YAML
-- `execute()` for webview invocations — returns `AsyncIterable<string>` chunks
+- `execute()` for webview invocations — returns `AsyncIterable<string>` chunks (including tool status messages)
+- `buildChatMessages()` is public for unit testing
+
+### Tool Calling (`agents/tools.ts`)
+
+The agent can read/write files and run commands during **implement** mode, and has read-only access in **plan** and **todo** modes. Tools are implemented as private tool definitions passed to the Language Model API, not registered globally.
+
+#### Available Tools
+
+| Tool | Description | Confirmation | Modes |
+|------|-------------|--------------|-------|
+| `readFile(path)` | Read file contents relative to workspace root | No | All |
+| `writeFile(path, content)` | Create or overwrite a file | Yes (modal dialog) | Implement |
+| `listFiles(pattern)` | List files matching a glob pattern | No | All |
+| `runTerminal(command)` | Run a shell command and return output | Yes (modal dialog) | Implement |
+| `editFile(path, oldText, newText)` | Surgical text replacement — `oldText` must appear exactly once | Yes (modal dialog) | Implement |
+| `searchFiles(query, pattern?, isRegex?)` | Search file contents across workspace, returns matching lines with locations | No | All |
+
+`READ_ONLY_TOOLS` exports the subset: readFile, listFiles, searchFiles. `TOOL_DEFINITIONS` exports all 6.
+
+#### Path Sandboxing
+
+- All paths are resolved relative to the workspace root via `validatePath()`
+- Path traversal (`../`) is blocked by default — resolved path must remain under workspace root
+- Setting `agentKanban.allowExternalPaths` (boolean, default `false`) unlocks external paths for monorepo setups
+- `validatePath()` normalises paths and checks containment after resolution
+
+#### Guardrails
+
+- **Confirmation prompts**: `writeFile` and `runTerminal` show a modal VS Code dialog ("Allow" / "Deny") before execution
+- **Rate limiting**: Maximum 20 tool calls per agent turn (prevents infinite loops)
+- **Output caps**: File reads capped at 50,000 chars, terminal output at 10,000 chars
+- **Terminal timeout**: Commands time out after 30 seconds
+
+#### Agentic Loop Flow
+
+```
+User sends message (implement mode)
+  → buildChatMessages() with TOOL_DEFINITIONS
+  → model.sendRequest(messages, { tools, toolMode: Auto })
+  → iterate response.stream
+    → LanguageModelTextPart → yield text to webview
+    → LanguageModelToolCallPart → collect all tool calls for this turn
+  → If tool calls present:
+    → Append Assistant message (text + tool calls) to messages
+    → Execute each tool via ToolExecutor
+    → Yield status messages (📁 Read file: ..., ✅ Written: ...)
+    → Append User message with LanguageModelToolResultPart for each call
+    → model.sendRequest(messages, { tools }) again → loop
+  → Until model responds with text only (no tool calls)
+```
 
 ### Action Instructions
 
-| Action | System Instruction |
-|--------|--------------------|
-| `plan` | Discuss, analyse, plan. No code or TODOs. |
-| `todo` | Generate/update actionable TODO list in markdown checkbox format. |
-| `implement` | Write code following pragmatic principles. Explain what and why. |
+| Action | System Instruction | Tools |
+|--------|--------------------| ------|
+| `plan` | Discuss, analyse, plan. No code or TODOs. Read-only tools available for codebase exploration. | readFile, listFiles, searchFiles |
+| `todo` | Generate/update actionable TODO list in markdown checkbox format. Read-only tools available. | readFile, listFiles, searchFiles |
+| `implement` | Write code following pragmatic principles. Use tools to read/write files and run commands. | readFile, writeFile, listFiles, runTerminal, editFile, searchFiles |
+
+### Model Selection
+
+Model resolution follows a priority chain:
+
+1. **Per-task override**: `task.model` field in YAML (set via model dropdown in task detail UI)
+2. **Default setting**: `agentKanban.defaultModel` (string, workspace-scoped)
+3. **Auto-detect**: First model returned by `vscode.lm.selectChatModels()`
+
+The task detail webview shows a model dropdown populated by `vscode.lm.selectChatModels()`. Selecting a model saves it to the task's YAML file. An empty selection clears the override, falling back to the default.
+
+### AGENTS.md Auto-Discovery
+
+On extension activation, `loadAgentInstructions()` scans the workspace root for instruction files in priority order:
+
+1. `AGENTS.md`
+2. `.github/copilot-instructions.md`
+3. `.github/AGENTS.md`
+4. `CLAUDE.md`
+
+The first file found is read and its content is prepended to the system prompt (before the board base prompt) in `buildChatMessages()`. The content is cached — call `loadAgentInstructions()` again to refresh.
 
 ## Multi-User Support
 
@@ -208,6 +287,7 @@ All services accept an optional `logger?: LogService` constructor parameter, def
 | `boardView` | Board webview events |
 | `taskDetail` | Task detail webview events |
 | `copilot` | Copilot Chat provider operations |
+| `tools` | Tool execution, path validation |
 
 ### Log Format
 

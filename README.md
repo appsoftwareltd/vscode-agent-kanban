@@ -34,12 +34,32 @@ A VS Code extension providing an integrated Kanban board for managing coding age
 ### Agent Context
 
 When you send a message, the agent receives:
+- **Workspace instructions** — auto-discovered from `AGENTS.md`, `.github/copilot-instructions.md`, `.github/AGENTS.md`, or `CLAUDE.md` (first found wins)
 - The board's base prompt (configurable in `.agentkanban/board.yaml`)
 - The task title and description
 - The full conversation history for the task
 - The action type (plan/todo/implement) with role-specific instructions
 
 The YAML conversation **is** the persistent context — every interaction rebuilds from it, so the agent always has the full picture.
+
+### Model Selection
+
+Each task can use a different language model. Set a default with `agentKanban.defaultModel`, or use the model dropdown in the task detail view to override per-task. Leave both empty to auto-detect the first available model.
+
+### Tool Calling (Implement Mode)
+
+When you use **Implement**, the agent has access to tools that let it modify your codebase:
+
+| Tool | What it does |
+|------|-------------|
+| `readFile` | Read file contents |
+| `writeFile` | Create or overwrite files (requires your confirmation) |
+| `listFiles` | List files matching a pattern |
+| `runTerminal` | Run shell commands (requires your confirmation) || editFile | Surgical text replacement in a file (requires your confirmation) |
+| searchFiles | Search file contents across the workspace by text or regex |
+
+In **Plan** and **Todo** modes, the agent has read-only access (readFile, listFiles, searchFiles) so it can explore your codebase while planning.
+The agent operates within your workspace root by default. Destructive actions (file writes, terminal commands) always prompt for confirmation before executing. Set `agentKanban.allowExternalPaths` to `true` if you need the agent to access files outside the workspace (e.g. monorepo setups).
 
 ### Storage
 
@@ -63,7 +83,7 @@ Use `@kanban` in the Copilot chat window with commands:
 |---------|-------|-------------|
 | `agentKanban.userName` | Application (local) | Your display name for conversations |
 | `agentKanban.enableLogging` | Window | Enable diagnostic logging to `.agentkanban/logs/`. Requires reload. |
-
+| `agentKanban.allowExternalPaths` | Window | Allow the agent to read/write files outside the workspace root. || `agentKanban.defaultModel` | Window | Default language model ID. Leave empty to auto-detect. Can be overridden per-task via the model dropdown. |
 ## Development
 
 ```bash

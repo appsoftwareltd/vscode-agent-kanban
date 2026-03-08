@@ -37,6 +37,7 @@ const workspace = {
         onDidDelete: () => ({ dispose: () => { } }),
         dispose: () => { },
     }),
+    findFiles: async (_pattern: any, _exclude?: any, _maxResults?: number) => [] as any[],
 };
 
 const window = {
@@ -83,6 +84,37 @@ class RelativePattern {
     constructor(public base: any, public pattern: string) { }
 }
 
+const lm = {
+    selectChatModels: async (_selector?: any) => [] as any[],
+};
+
+const LanguageModelChatToolMode = {
+    Auto: 'auto',
+};
+
+class CancellationTokenSource {
+    token = { isCancellationRequested: false };
+    cancel() { this.token.isCancellationRequested = true; }
+    dispose() { }
+}
+
+class LanguageModelTextPart {
+    constructor(public value: string) { }
+}
+
+class LanguageModelToolCallPart {
+    constructor(public callId: string, public name: string, public input: any) { }
+}
+
+class LanguageModelToolResultPart {
+    constructor(public callId: string, public content: any[]) { }
+}
+
+const LanguageModelChatMessage = {
+    User: (content: any) => ({ role: 'user', content }),
+    Assistant: (content: any) => ({ role: 'assistant', content }),
+};
+
 export {
     Uri,
     EventEmitter,
@@ -92,4 +124,11 @@ export {
     chat,
     ViewColumn,
     RelativePattern,
+    lm,
+    LanguageModelChatToolMode,
+    CancellationTokenSource,
+    LanguageModelTextPart,
+    LanguageModelToolCallPart,
+    LanguageModelToolResultPart,
+    LanguageModelChatMessage,
 };

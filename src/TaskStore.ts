@@ -85,17 +85,47 @@ export class TaskStore {
     }
 
     createTask(title: string, lane: string): Task {
-        const id = `task-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-        const now = new Date().toISOString();
+        const now = new Date();
+        const id = TaskStore.generateId(now, title);
         return {
             id,
             title,
             lane,
-            created: now,
-            updated: now,
+            created: now.toISOString(),
+            updated: now.toISOString(),
             description: '',
             conversation: [],
         };
+    }
+
+    /**
+     * Generate a task ID in the format: task_YYYYMMDD_HHmmssfff_XXXXXX_slugified_title
+     */
+    static generateId(date: Date, title: string): string {
+        const y = date.getFullYear();
+        const mo = String(date.getMonth() + 1).padStart(2, '0');
+        const d = String(date.getDate()).padStart(2, '0');
+        const h = String(date.getHours()).padStart(2, '0');
+        const mi = String(date.getMinutes()).padStart(2, '0');
+        const s = String(date.getSeconds()).padStart(2, '0');
+        const ms = String(date.getMilliseconds()).padStart(3, '0');
+        const ts = `${y}${mo}${d}_${h}${mi}${s}${ms}`;
+        const uuid = Math.random().toString(36).slice(2, 8);
+        const slug = TaskStore.slugify(title);
+        return `task_${ts}_${uuid}_${slug}`;
+    }
+
+    /**
+     * Slugify a title: lowercase, replace non-alphanumeric with underscores,
+     * collapse consecutive underscores, trim edges, truncate to 50 chars.
+     */
+    static slugify(title: string): string {
+        return title
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, '_')
+            .replace(/^_+|_+$/g, '')
+            .slice(0, 50)
+            .replace(/_+$/, '');
     }
 
     appendMessage(task: Task, message: Message): void {

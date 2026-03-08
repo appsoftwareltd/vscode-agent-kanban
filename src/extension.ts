@@ -27,6 +27,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const taskStore = new TaskStore(workspaceFolder.uri, logger);
     const boardConfigStore = new BoardConfigStore(workspaceFolder.uri, logger);
     const agentProvider = new CopilotChatProvider(logger);
+    agentProvider.setWorkspaceRoot(workspaceFolder.uri.fsPath);
+    agentProvider.loadAgentInstructions();
 
     const boardViewProvider = new BoardViewProvider(
         context.extensionUri,

@@ -3,6 +3,7 @@ import type { TaskStore } from './TaskStore';
 import type { BoardConfigStore } from './BoardConfigStore';
 import type { AgentProvider } from './agents/AgentProvider';
 import type { Task, Message } from './types';
+import { STATUS_PREFIX } from './agents/CopilotChatProvider';
 import { ensureUserName, getUserName } from './userName';
 import type { LogService } from './LogService';
 import { NO_OP_LOGGER } from './LogService';
@@ -62,6 +63,9 @@ export class TaskDetailViewProvider {
 
         this.updatePanel(taskId, panel);
 
+        // Send available models to the webview
+        this.sendAvailableModels(panel);
+
         // Listen for task changes to refresh the panel
         this.taskStore.onDidChange(() => {
             if (this.panels.has(taskId) && !this.sendingTasks.has(taskId)) {
@@ -78,6 +82,18 @@ export class TaskDetailViewProvider {
         const config = this.boardConfigStore.get();
         panel.title = task.title;
         panel.webview.html = this.getHtml(panel.webview, task, config);
+        // Re-send models when panel refreshes
+        this.sendAvailableModels(panel);
+    }
+
+    private async sendAvailableModels(panel: vscode.WebviewPanel): Promise<void> {
+        try {
+            const models = await vscode.lm.selectChatModels();
+            const modelList = models.map(m => ({ id: m.id, name: m.name || m.id }));
+            panel.webview.postMessage({ type: 'availableModels', models: modelList });
+        } catch {
+            // lm API may not be available in tests
+        }
     }
 
     private async handleMessage(taskId: string, panel: vscode.WebviewPanel, message: any): Promise<void> {
@@ -149,12 +165,15 @@ export class TaskDetailViewProvider {
                         fullResponse = `Error: ${err.message || 'Agent execution failed'}`;
                     }
 
+                    // Strip ephemeral tool-status lines before persisting
+                    const persistentResponse = TaskDetailViewProvider.stripStatusLines(fullResponse);
+
                     // Append agent response
                     const agentMsg: Message = {
                         role: 'agent',
                         provider: this.agentProvider.name,
                         timestamp: new Date().toISOString(),
-                        content: fullResponse,
+                        content: persistentResponse,
                     };
                     this.taskStore.appendMessage(task, agentMsg);
                     await this.taskStore.save(task);
@@ -194,7 +213,25 @@ export class TaskDetailViewProvider {
                 }
                 break;
             }
+            case 'updateModel': {
+                const task = this.taskStore.get(taskId);
+                if (task) {
+                    task.model = message.model || undefined; // empty string = clear override
+                    await this.taskStore.save(task);
+                }
+                break;
+            }
         }
+    }
+
+    /** Remove ephemeral STATUS_PREFIX lines from agent output before saving to YAML. */
+    static stripStatusLines(text: string): string {
+        return text
+            .split('\n')
+            .filter(line => !line.includes(STATUS_PREFIX))
+            .join('\n')
+            .replace(/\n{3,}/g, '\n\n')
+            .trim();
     }
 
     private getHtml(webview: vscode.Webview, task: Task, config: any): string {
@@ -364,6 +401,10 @@ export class TaskDetailViewProvider {
             display: none;
         }
         .streaming-indicator.active { display: block; }
+        .status-text {
+            color: var(--vscode-descriptionForeground);
+            font-style: italic;
+        }
         .input-area {
             border-top: 1px solid var(--vscode-widget-border);
             padding-top: 12px;
@@ -435,6 +476,10 @@ export class TaskDetailViewProvider {
             <select id="laneSelect">
                 ${laneOptions}
             </select>
+            <label>Model:</label>
+            <select id="modelSelect">
+                <option value="">Default</option>
+            </select>
         </div>
         <div class="description">
             <textarea id="taskDescription" placeholder="Task description...">${escapeHtml(task.description)}</textarea>
@@ -496,6 +541,38 @@ export class TaskDetailViewProvider {
         document.getElementById('laneSelect').addEventListener('change', (e) => {
             vscode.postMessage({ type: 'updateLane', lane: e.target.value });
         });
+        document.getElementById('modelSelect').addEventListener('change', (e) => {
+            vscode.postMessage({ type: 'updateModel', model: e.target.value });
+        });
+
+        const currentTaskModel = '${escapeAttr(task.model || '')}';
+
+        const STATUS_MARKER = '\x00STATUS:';
+
+        function renderStreamingContent(raw) {
+            const el = document.getElementById('streaming-content');
+            el.innerHTML = '';
+            const lines = raw.split('\n');
+            for (let i = 0; i < lines.length; i++) {
+                const line = lines[i];
+                const idx = line.indexOf(STATUS_MARKER);
+                if (idx !== -1) {
+                    // Render text before marker as normal
+                    if (idx > 0) {
+                        el.appendChild(document.createTextNode(line.slice(0, idx)));
+                    }
+                    const span = document.createElement('span');
+                    span.className = 'status-text';
+                    span.textContent = line.slice(idx + STATUS_MARKER.length);
+                    el.appendChild(span);
+                } else {
+                    el.appendChild(document.createTextNode(line));
+                }
+                if (i < lines.length - 1) {
+                    el.appendChild(document.createTextNode('\n'));
+                }
+            }
+        }
 
         function sendMessage() {
             if (isSending) { console.log('[kanban] sendMessage: already sending, ignoring'); return; }
@@ -528,7 +605,7 @@ export class TaskDetailViewProvider {
             const msg = event.data;
             if (msg.type === 'agentChunk') {
                 console.log('[kanban] agentChunk received, len:', msg.content?.length);
-                document.getElementById('streaming-content').textContent = msg.content;
+                renderStreamingContent(msg.content || '');
                 scrollToBottom();
             } else if (msg.type === 'agentDone') {
                 console.log('[kanban] agentDone received');
@@ -536,6 +613,16 @@ export class TaskDetailViewProvider {
                 document.getElementById('sendBtn').disabled = false;
                 document.getElementById('streaming').classList.remove('active');
                 // Panel will be refreshed by the task store change event
+            } else if (msg.type === 'availableModels') {
+                const select = document.getElementById('modelSelect');
+                select.innerHTML = '<option value="">Default</option>';
+                for (const m of msg.models) {
+                    const opt = document.createElement('option');
+                    opt.value = m.id;
+                    opt.textContent = m.name;
+                    if (m.id === currentTaskModel) { opt.selected = true; }
+                    select.appendChild(opt);
+                }
             }
         });
 

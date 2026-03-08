@@ -17,6 +17,8 @@ export interface Task {
     created: string;
     updated: string;
     description: string;
+    /** Optional model override — when set, uses this model instead of the default. */
+    model?: string;
     conversation: Message[];
 }
 
