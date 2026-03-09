@@ -1,4 +1,4 @@
-# VS COde Agent Kanban
+# VS Code Agent Kanban
 
 [![CI](https://github.com/appsoftwareltd/vscode-agent-kanban/actions/workflows/ci.yml/badge.svg)](https://github.com/appsoftwareltd/vscode-agent-kanban/actions/workflows/ci.yml)
 
