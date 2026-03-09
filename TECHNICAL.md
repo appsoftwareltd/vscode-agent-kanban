@@ -10,7 +10,6 @@ src/
 ├── TaskStore.ts              # Markdown task file read/write/watch (YAML frontmatter)
 ├── BoardConfigStore.ts       # Board configuration persistence
 ├── BoardViewProvider.ts      # Sidebar webview — kanban board UI
-├── userName.ts               # User display name management
 ├── agents/
 │   └── ChatParticipant.ts    # Lightweight @kanban chat command router
 └── test/
@@ -50,6 +49,9 @@ interface LaneConfig {
     id: string;           // URL-safe identifier
     name: string;         // Display name
 }
+
+const PROTECTED_LANE_NAMES = ['todo', 'done'];
+function isProtectedLane(lane: LaneConfig): boolean  // matches by name, case-insensitive
 ```
 
 ## Persistence Layer
@@ -108,6 +110,8 @@ task: task_20260308_143045123_abc123_oauth2
 
 - Reads/writes `.agentkanban/board.yaml`
 - Creates default config (3 lanes: Todo, Doing, Done; empty base prompt) if file doesn't exist
+- `init()` creates the `.agentkanban/` directory, ensures `.gitignore` exists, then loads or creates `board.yaml`
+- `ensureGitignore()` — creates `.agentkanban/.gitignore` (ignoring `logs/`) if it doesn't already exist. Idempotent; never overwrites a user-edited file.
 - `update()` accepts partial config for incremental changes
 - Fires `onDidChange` event
 
@@ -120,11 +124,14 @@ task: task_20260308_143045123_abc123_oauth2
 - Drag-and-drop via native HTML5 drag events
 - Card click opens the task's `.md` file directly via `vscode.workspace.openTextDocument()`
 - **Done lane protection**: Remove button hidden for the Done lane; `removeLane` handler blocks deletion with a warning
+- **Protected lanes**: Lanes named "Todo" or "Done" (case-insensitive) cannot be removed or renamed. Uses `isProtectedLane()` from `types.ts`.
+- **Lane removal with task cleanup**: Removing a non-protected lane deletes all tasks in that lane. If tasks exist, a confirmation dialog is shown first.
+- **Lane drag-and-drop reordering**: Lane headers are draggable. Dropping a lane on another lane reorders the `config.lanes` array via a `moveLane` message. Uses a separate data transfer type (`application/x-lane-id`) to distinguish from card drags.
 - Communication via `postMessage`/`onDidReceiveMessage`:
   - `newTask` — prompts for title, creates markdown file
   - `openTask` — opens task `.md` file in editor
   - `moveTask` — updates task lane in frontmatter
-  - `addLane` / `removeLane` / `renameLane` — updates board config
+  - `addLane` / `removeLane` / `renameLane` / `moveLane` — updates board config
   - `deleteTask` — removes task and todo files
 - CSP: nonce-based script/style, `default-src 'none'`
 
@@ -159,8 +166,12 @@ Returns `{ task, freeText }` where `freeText` is any remaining prompt after the 
 3. Ensure `.agentkanban/INSTRUCTION.md` exists (copy from bundled template if missing)
 4. Set `lastSelectedTaskTitle` for verb followups
 5. Open the task file in the editor via `vscode.window.showTextDocument()`
-6. Output INSTRUCTION.md reference, task title, task file path
+6. Output INSTRUCTION.md reference, custom instruction file reference (if configured), task title, task file path
 7. Guide user to type `plan`, `todo`, or `implement` in Copilot agent mode
+
+##### Custom Instruction File
+
+When `agentKanban.customInstructionFile` is set, `handleTask()` resolves the path (relative to workspace root or absolute), verifies the file exists via `workspace.fs.stat()`, and injects `Read <path> for additional instructions.` between the INSTRUCTION.md reference and the task context. If the file does not exist, the reference is silently skipped with a log warning.
 
 #### /new Flow
 

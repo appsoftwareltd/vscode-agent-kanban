@@ -64,7 +64,6 @@ describe('ChatParticipant', () => {
             };
             (taskStore as any).tasks.set(task.id, task);
 
-            vi.spyOn(workspace.fs, 'stat').mockRejectedValue(new Error('not found'));
             vi.spyOn(workspace.fs, 'readFile').mockResolvedValue(new TextEncoder().encode('# Template'));
             vi.spyOn(workspace.fs, 'writeFile').mockResolvedValue(undefined);
             vi.spyOn(workspace, 'openTextDocument').mockResolvedValue({} as any);
@@ -131,13 +130,6 @@ describe('ChatParticipant', () => {
             vi.spyOn(workspace.fs, 'readFile').mockResolvedValue(
                 new TextEncoder().encode('# Agent Kanban — Instruction'),
             );
-            vi.spyOn(workspace.fs, 'stat').mockImplementation(async (uri: any) => {
-                const path = uri.fsPath || uri.path || '';
-                if (path.includes('INSTRUCTION.md')) {
-                    throw new Error('not found');
-                }
-                return { type: 1, ctime: 0, mtime: 0, size: 0 } as any;
-            });
             vi.spyOn(workspace.fs, 'writeFile').mockResolvedValue(undefined);
             vi.spyOn(workspace, 'openTextDocument').mockResolvedValue({} as any);
             vi.spyOn(window, 'showTextDocument').mockResolvedValue(undefined as any);
@@ -234,6 +226,77 @@ describe('ChatParticipant', () => {
                 m.includes('No task found') || m.includes('No task match'),
             )).toBe(true);
         });
+
+        it('should include custom instruction file reference when setting is configured', async () => {
+            vi.spyOn(workspace, 'getConfiguration').mockReturnValue({
+                get: (key: string, defaultValue?: any) => {
+                    if (key === 'customInstructionFile') { return 'my-instructions.md'; }
+                    return defaultValue;
+                },
+                update: async () => { },
+            } as any);
+            vi.spyOn(workspace.fs, 'stat').mockResolvedValue({ type: 1, ctime: 0, mtime: 0, size: 100 } as any);
+
+            const response = mockResponse();
+            await participant.handleRequest(mockRequest('task', 'Auth Feature'), {} as any, response, mockToken);
+
+            expect(response.messages.some((m: string) =>
+                m.includes('my-instructions.md') && m.includes('additional instructions'),
+            )).toBe(true);
+        });
+
+        it('should not include custom instruction reference when setting is empty', async () => {
+            vi.spyOn(workspace, 'getConfiguration').mockReturnValue({
+                get: (key: string, defaultValue?: any) => {
+                    if (key === 'customInstructionFile') { return ''; }
+                    return defaultValue;
+                },
+                update: async () => { },
+            } as any);
+
+            const response = mockResponse();
+            await participant.handleRequest(mockRequest('task', 'Auth Feature'), {} as any, response, mockToken);
+
+            expect(response.messages.every((m: string) => !m.includes('additional instructions'))).toBe(true);
+        });
+
+        it('should skip custom instruction reference when file does not exist', async () => {
+            vi.spyOn(workspace, 'getConfiguration').mockReturnValue({
+                get: (key: string, defaultValue?: any) => {
+                    if (key === 'customInstructionFile') { return 'nonexistent.md'; }
+                    return defaultValue;
+                },
+                update: async () => { },
+            } as any);
+            vi.spyOn(workspace.fs, 'stat').mockRejectedValue(new Error('File not found'));
+
+            const response = mockResponse();
+            await participant.handleRequest(mockRequest('task', 'Auth Feature'), {} as any, response, mockToken);
+
+            expect(response.messages.every((m: string) => !m.includes('additional instructions'))).toBe(true);
+        });
+
+        it('should place custom instruction reference after INSTRUCTION.md and before task context', async () => {
+            vi.spyOn(workspace, 'getConfiguration').mockReturnValue({
+                get: (key: string, defaultValue?: any) => {
+                    if (key === 'customInstructionFile') { return 'custom.md'; }
+                    return defaultValue;
+                },
+                update: async () => { },
+            } as any);
+            vi.spyOn(workspace.fs, 'stat').mockResolvedValue({ type: 1, ctime: 0, mtime: 0, size: 100 } as any);
+
+            const response = mockResponse();
+            await participant.handleRequest(mockRequest('task', 'Auth Feature'), {} as any, response, mockToken);
+
+            const instrIdx = response.messages.findIndex((m: string) => m.includes('INSTRUCTION.md'));
+            const customIdx = response.messages.findIndex((m: string) => m.includes('custom.md'));
+            const taskIdx = response.messages.findIndex((m: string) => m.includes('Working on task'));
+
+            expect(instrIdx).toBeGreaterThanOrEqual(0);
+            expect(customIdx).toBeGreaterThan(instrIdx);
+            expect(taskIdx).toBeGreaterThan(customIdx);
+        });
     });
 
     describe('resolveTaskFromPrompt', () => {
@@ -311,29 +374,40 @@ describe('ChatParticipant', () => {
         });
     });
 
-    describe('ensureInstructionFile', () => {
+    describe('syncInstructionFile', () => {
         it('should create INSTRUCTION.md when it does not exist', async () => {
-            vi.spyOn(workspace.fs, 'stat').mockRejectedValueOnce(new Error('not found'));
             const readSpy = vi.spyOn(workspace.fs, 'readFile').mockResolvedValueOnce(
                 new TextEncoder().encode('# Template content'),
             );
             const writeSpy = vi.spyOn(workspace.fs, 'writeFile').mockResolvedValue(undefined);
 
-            const uri = await participant.ensureInstructionFile();
+            const uri = await participant.syncInstructionFile();
 
             expect(uri).toBeDefined();
             expect(readSpy).toHaveBeenCalled();
             expect(writeSpy).toHaveBeenCalled();
         });
 
-        it('should skip creation when INSTRUCTION.md already exists', async () => {
-            vi.spyOn(workspace.fs, 'stat').mockResolvedValueOnce({ type: 1, ctime: 0, mtime: 0, size: 0 } as any);
+        it('should overwrite INSTRUCTION.md when it already exists', async () => {
+            const templateContent = new TextEncoder().encode('# Updated template');
+            const readSpy = vi.spyOn(workspace.fs, 'readFile').mockResolvedValueOnce(templateContent);
             const writeSpy = vi.spyOn(workspace.fs, 'writeFile').mockResolvedValue(undefined);
 
-            const uri = await participant.ensureInstructionFile();
+            const uri = await participant.syncInstructionFile();
 
             expect(uri).toBeDefined();
-            expect(writeSpy).not.toHaveBeenCalled();
+            expect(readSpy).toHaveBeenCalled();
+            expect(writeSpy).toHaveBeenCalled();
+        });
+
+        it('should write the exact template content to the workspace', async () => {
+            const templateContent = new TextEncoder().encode('# Exact template bytes');
+            vi.spyOn(workspace.fs, 'readFile').mockResolvedValueOnce(templateContent);
+            const writeSpy = vi.spyOn(workspace.fs, 'writeFile').mockResolvedValue(undefined);
+
+            await participant.syncInstructionFile();
+
+            expect(writeSpy).toHaveBeenCalledWith(expect.anything(), templateContent);
         });
     });
 

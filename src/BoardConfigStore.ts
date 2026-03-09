@@ -6,6 +6,8 @@ import type { LogService } from './LogService';
 import { NO_OP_LOGGER } from './LogService';
 
 const CONFIG_PATH = '.agentkanban/board.yaml';
+const GITIGNORE_PATH = '.agentkanban/.gitignore';
+const GITIGNORE_CONTENT = '# Agent Kanban — auto-generated\nlogs/\n';
 
 export class BoardConfigStore {
     private config: BoardConfig = { ...DEFAULT_BOARD_CONFIG, lanes: [...DEFAULT_BOARD_CONFIG.lanes] };
@@ -27,6 +29,8 @@ export class BoardConfigStore {
         } catch {
             // directory may already exist
         }
+
+        await this.ensureGitignore();
 
         try {
             const content = await vscode.workspace.fs.readFile(this.configUri);
@@ -58,6 +62,22 @@ export class BoardConfigStore {
         await this.save();
         this.logger.info('boardConfig', 'Board config updated');
         this._onDidChange.fire();
+    }
+
+    private async ensureGitignore(): Promise<void> {
+        const gitignoreUri = vscode.Uri.joinPath(this.workspaceUri, GITIGNORE_PATH);
+        try {
+            await vscode.workspace.fs.stat(gitignoreUri);
+            return; // already exists
+        } catch {
+            // file doesn't exist — create it
+        }
+        try {
+            await vscode.workspace.fs.writeFile(gitignoreUri, new TextEncoder().encode(GITIGNORE_CONTENT));
+            this.logger.info('boardConfig', 'Created .agentkanban/.gitignore');
+        } catch (err: any) {
+            this.logger.warn('boardConfig', `Failed to create .gitignore: ${err.message}`);
+        }
     }
 
     private async save(): Promise<void> {

@@ -27,3 +27,9 @@ export const DEFAULT_BOARD_CONFIG: BoardConfig = {
     lanes: DEFAULT_LANES,
     basePrompt: '',
 };
+
+export const PROTECTED_LANE_NAMES = ['todo', 'done'];
+
+export function isProtectedLane(lane: LaneConfig): boolean {
+    return PROTECTED_LANE_NAMES.includes(lane.name.toLowerCase());
+}

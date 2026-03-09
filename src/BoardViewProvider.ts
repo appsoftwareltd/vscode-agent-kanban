@@ -1,9 +1,9 @@
 import * as vscode from 'vscode';
 import type { TaskStore } from './TaskStore';
 import type { BoardConfigStore } from './BoardConfigStore';
-import { ensureUserName } from './userName';
 import type { LogService } from './LogService';
 import { NO_OP_LOGGER } from './LogService';
+import { isProtectedLane, PROTECTED_LANE_NAMES } from './types';
 
 export class BoardViewProvider implements vscode.WebviewViewProvider {
     private view?: vscode.WebviewView;
@@ -89,7 +89,6 @@ export class BoardViewProvider implements vscode.WebviewViewProvider {
                 break;
             }
             case 'newTask':
-                await ensureUserName();
                 await this.createNewTask();
                 break;
             case 'addLane': {
@@ -107,11 +106,26 @@ export class BoardViewProvider implements vscode.WebviewViewProvider {
                 break;
             }
             case 'removeLane': {
-                if (message.laneId === 'done') {
-                    vscode.window.showWarningMessage('The Done lane cannot be removed.');
+                const config = this.boardConfigStore.get();
+                const lane = config.lanes.find(l => l.id === message.laneId);
+                if (lane && isProtectedLane(lane)) {
+                    vscode.window.showWarningMessage(`The ${lane.name} lane cannot be removed.`);
                     break;
                 }
-                const config = this.boardConfigStore.get();
+                const laneTasks = this.taskStore.getAll().filter(t => t.lane === message.laneId);
+                if (laneTasks.length > 0) {
+                    const confirm = await vscode.window.showWarningMessage(
+                        `Removing this lane will delete ${laneTasks.length} task${laneTasks.length === 1 ? '' : 's'}. Continue?`,
+                        { modal: true },
+                        'Yes',
+                    );
+                    if (confirm !== 'Yes') {
+                        break;
+                    }
+                    for (const task of laneTasks) {
+                        await this.taskStore.delete(task.id);
+                    }
+                }
                 config.lanes = config.lanes.filter(l => l.id !== message.laneId);
                 await this.boardConfigStore.update({ lanes: config.lanes });
                 break;
@@ -119,21 +133,41 @@ export class BoardViewProvider implements vscode.WebviewViewProvider {
             case 'renameLane': {
                 const config = this.boardConfigStore.get();
                 const lane = config.lanes.find(l => l.id === message.laneId);
-                if (lane) {
-                    const newName = await vscode.window.showInputBox({
-                        prompt: 'Rename lane',
-                        value: lane.name,
-                        validateInput: (v) => v.trim() ? null : 'Name cannot be empty',
-                    });
-                    if (newName?.trim()) {
-                        lane.name = newName.trim();
-                        await this.boardConfigStore.update({ lanes: config.lanes });
-                    }
+                if (!lane) { break; }
+                if (isProtectedLane(lane)) {
+                    vscode.window.showWarningMessage(`The ${lane.name} lane cannot be renamed.`);
+                    break;
+                }
+                const newName = await vscode.window.showInputBox({
+                    prompt: 'Rename lane',
+                    value: lane.name,
+                    validateInput: (v) => {
+                        if (!v.trim()) { return 'Name cannot be empty'; }
+                        if (PROTECTED_LANE_NAMES.includes(v.trim().toLowerCase())) {
+                            return `Cannot rename to "${v.trim()}" — that name is reserved`;
+                        }
+                        return null;
+                    },
+                });
+                if (newName?.trim()) {
+                    lane.name = newName.trim();
+                    await this.boardConfigStore.update({ lanes: config.lanes });
                 }
                 break;
             }
             case 'deleteTask': {
                 await this.taskStore.delete(message.taskId);
+                break;
+            }
+            case 'moveLane': {
+                const config = this.boardConfigStore.get();
+                const fromIndex = config.lanes.findIndex(l => l.id === message.sourceLaneId);
+                const toIndex = config.lanes.findIndex(l => l.id === message.targetLaneId);
+                if (fromIndex !== -1 && toIndex !== -1 && fromIndex !== toIndex) {
+                    const [moved] = config.lanes.splice(fromIndex, 1);
+                    config.lanes.splice(toIndex, 0, moved);
+                    await this.boardConfigStore.update({ lanes: config.lanes });
+                }
                 break;
             }
         }
@@ -153,13 +187,14 @@ export class BoardViewProvider implements vscode.WebviewViewProvider {
                 </div>
             `).join('');
 
-            const isDoneLane = lane.id === 'done';
+            const protected_ = isProtectedLane(lane);
             return `
                 <div class="lane" data-lane-id="${escapeHtml(lane.id)}">
-                    <div class="lane-header">
-                        <span class="lane-title" data-rename-lane-id="${escapeHtml(lane.id)}">${escapeHtml(lane.name)}</span>
+                    <div class="lane-header" draggable="true" data-drag-lane-id="${escapeHtml(lane.id)}">
+                        <span class="lane-grip" title="Drag to reorder">&#x2630;</span>
+                        <span class="lane-title${protected_ ? '' : ' lane-title-renameable'}" ${protected_ ? '' : `data-rename-lane-id="${escapeHtml(lane.id)}"`}>${escapeHtml(lane.name)}</span>
                         <span class="lane-count">${laneTasks.length}</span>
-                        ${isDoneLane ? '' : `<button class="lane-remove" data-remove-lane-id="${escapeHtml(lane.id)}" title="Remove lane">&times;</button>`}
+                        ${protected_ ? '' : `<button class="lane-remove" data-remove-lane-id="${escapeHtml(lane.id)}" title="Remove lane">&times;</button>`}
                     </div>
                     <div class="lane-cards" data-lane-id="${escapeHtml(lane.id)}">
                         ${cardsHtml}
@@ -231,6 +266,22 @@ export class BoardViewProvider implements vscode.WebviewViewProvider {
             border-bottom: 1px solid var(--vscode-widget-border);
         }
         .lane-title { flex: 1; cursor: default; }
+        .lane-title-renameable { cursor: pointer; }
+        .lane-grip {
+            cursor: grab;
+            opacity: 0.4;
+            font-size: 11px;
+            user-select: none;
+            padding-right: 2px;
+        }
+        .lane-grip:hover { opacity: 0.8; }
+        .lane-header[draggable="true"]:active .lane-grip { cursor: grabbing; }
+        .lane.drag-over-lane {
+            outline: 2px solid var(--vscode-focusBorder);
+            outline-offset: -2px;
+            border-radius: 6px;
+        }
+        .lane.dragging-lane { opacity: 0.4; }
         .lane-count {
             background: var(--vscode-badge-background);
             color: var(--vscode-badge-foreground);
@@ -346,10 +397,23 @@ export class BoardViewProvider implements vscode.WebviewViewProvider {
             }
         });
 
-        // Drag and drop
+        // Drag and drop — tasks
         let draggedTaskId = null;
+        // Drag and drop — lanes
+        let draggedLaneId = null;
 
         document.addEventListener('dragstart', (e) => {
+            // Lane header drag
+            const laneHeader = e.target.closest?.('[data-drag-lane-id]');
+            if (laneHeader) {
+                draggedLaneId = laneHeader.dataset.dragLaneId;
+                e.dataTransfer.setData('application/x-lane-id', draggedLaneId);
+                e.dataTransfer.effectAllowed = 'move';
+                const laneEl = laneHeader.closest('.lane');
+                if (laneEl) laneEl.classList.add('dragging-lane');
+                return;
+            }
+            // Card drag
             const card = e.target.closest?.('.card');
             if (!card) return;
             draggedTaskId = card.dataset.taskId;
@@ -358,6 +422,16 @@ export class BoardViewProvider implements vscode.WebviewViewProvider {
         });
 
         document.addEventListener('dragend', (e) => {
+            // Lane drag end
+            if (draggedLaneId) {
+                document.querySelectorAll('.lane').forEach(el => {
+                    el.classList.remove('dragging-lane');
+                    el.classList.remove('drag-over-lane');
+                });
+                draggedLaneId = null;
+                return;
+            }
+            // Card drag end
             const card = e.target.closest?.('.card');
             if (card) card.classList.remove('dragging');
             document.querySelectorAll('.lane-cards').forEach(el => el.classList.remove('drag-over'));
@@ -366,6 +440,15 @@ export class BoardViewProvider implements vscode.WebviewViewProvider {
 
         document.addEventListener('dragover', (e) => {
             e.preventDefault();
+            if (draggedLaneId) {
+                const lane = e.target.closest?.('.lane');
+                if (lane && lane.dataset.laneId !== draggedLaneId) {
+                    // Clear all, then highlight target
+                    document.querySelectorAll('.lane').forEach(el => el.classList.remove('drag-over-lane'));
+                    lane.classList.add('drag-over-lane');
+                }
+                return;
+            }
             const laneCards = e.target.closest?.('.lane-cards');
             if (laneCards) {
                 laneCards.classList.add('drag-over');
@@ -373,6 +456,13 @@ export class BoardViewProvider implements vscode.WebviewViewProvider {
         });
 
         document.addEventListener('dragleave', (e) => {
+            if (draggedLaneId) {
+                const lane = e.target.closest?.('.lane');
+                if (lane && !lane.contains(e.relatedTarget)) {
+                    lane.classList.remove('drag-over-lane');
+                }
+                return;
+            }
             const laneCards = e.target.closest?.('.lane-cards');
             if (laneCards && !laneCards.contains(e.relatedTarget)) {
                 laneCards.classList.remove('drag-over');
@@ -381,6 +471,22 @@ export class BoardViewProvider implements vscode.WebviewViewProvider {
 
         document.addEventListener('drop', (e) => {
             e.preventDefault();
+            if (draggedLaneId) {
+                const targetLane = e.target.closest?.('.lane');
+                if (targetLane && targetLane.dataset.laneId !== draggedLaneId) {
+                    vscode.postMessage({
+                        type: 'moveLane',
+                        sourceLaneId: draggedLaneId,
+                        targetLaneId: targetLane.dataset.laneId,
+                    });
+                }
+                document.querySelectorAll('.lane').forEach(el => {
+                    el.classList.remove('dragging-lane');
+                    el.classList.remove('drag-over-lane');
+                });
+                draggedLaneId = null;
+                return;
+            }
             const laneCards = e.target.closest?.('.lane-cards');
             if (laneCards && draggedTaskId) {
                 const lane = laneCards.dataset.laneId;

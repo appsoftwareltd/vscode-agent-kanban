@@ -2,7 +2,7 @@
     "name": "vscode-agent-kanban",
     "displayName": "Agent Kanban",
     "description": "An integrated Kanban board for managing coding agent tasks with persistent, version-controllable markdown conversations.",
-    "version": "0.1.1",
+    "version": "0.2.0",
     "publisher": "appsoftwareltd",
     "license": "Elastic-2.0",
     "icon": "images/icon.png",
@@ -60,17 +60,17 @@
         "configuration": {
             "title": "Agent Kanban",
             "properties": {
-                "agentKanban.userName": {
-                    "type": "string",
-                    "default": "",
-                    "description": "Your display name for task conversations. This is stored locally and not committed to version control.",
-                    "scope": "application"
-                },
                 "agentKanban.enableLogging": {
                     "type": "boolean",
                     "default": false,
                     "description": "Enable diagnostic logging to .agentkanban/logs/. Rolling 10 MB files, max 5. Requires reload after changing.",
                     "scope": "window"
+                },
+                "agentKanban.customInstructionFile": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Path to a custom instruction file injected into the /task workflow. Standard agent files (AGENTS.md, copilot-instructions.md, etc.) are unaffected and continue to work as normal. Relative paths resolve from the workspace root.",
+                    "scope": "resource"
                 }
             }
         },

@@ -4,7 +4,6 @@ import { BoardViewProvider } from './BoardViewProvider';
 import { TaskStore } from './TaskStore';
 import { BoardConfigStore } from './BoardConfigStore';
 import { ChatParticipant } from './agents/ChatParticipant';
-import { ensureUserName } from './userName';
 import { LogService, NO_OP_LOGGER } from './LogService';
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
@@ -49,10 +48,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
     context.subscriptions.push(
         vscode.commands.registerCommand('agentKanban.newTask', async () => {
-            const userName = await ensureUserName();
-            if (!userName) {
-                return;
-            }
             boardViewProvider.createNewTask();
         }),
     );
@@ -115,6 +110,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     // Initialise stores
     await boardConfigStore.init();
     await taskStore.init();
+
+    // Sync INSTRUCTION.md from bundled template (keeps it up-to-date on extension updates)
+    await chatParticipantHandler.syncInstructionFile();
 
     if (logger.isEnabled) {
         logger.info('extension', 'Extension activated');

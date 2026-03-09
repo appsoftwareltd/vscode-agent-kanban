@@ -83,7 +83,7 @@ export class TaskStore {
         const uri = this.getTaskUri(task.id);
 
         // Preserve existing markdown body if the file already exists
-        let body = '\n## Conversation\n\n[user';
+        let body = '\n## Conversation\n\n[user]\n\n';
         try {
             const existing = await vscode.workspace.fs.readFile(uri);
             const existingText = new TextDecoder().decode(existing);
