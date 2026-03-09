@@ -6,6 +6,8 @@ A VS Code extension providing an integrated Kanban board for managing coding age
 
 Agent Kanban references its own instruction set, so it doesn't interfere with your existing agent files (e.g. AGENTS.md, skills etc).
 
+![VS Code Agent Kanban](https://raw.githubusercontent.com/appsoftwareltd/vscode-agent-kanban/main/images/icon.png)
+
 ## Features
 
 - **Kanban Board** — Visual board with customisable lanes (default: Todo, Doing, Done). Drag-and-drop task cards between lanes.
