@@ -103,9 +103,13 @@
         "lint": "tsc --noEmit"
     },
     "devDependencies": {
+        "@tailwindcss/postcss": "^4.2.1",
         "@types/node": "^20.11.0",
         "@types/vscode": "^1.95.0",
+        "autoprefixer": "^10.4.27",
         "esbuild": "^0.24.0",
+        "postcss": "^8.5.8",
+        "tailwindcss": "^4.2.1",
         "typescript": "^5.7.0",
         "vitest": "^3.0.0",
         "yaml": "^2.7.0"

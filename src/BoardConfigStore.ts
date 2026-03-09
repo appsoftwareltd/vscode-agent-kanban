@@ -59,9 +59,33 @@ export class BoardConfigStore {
         if (config.basePrompt !== undefined) {
             this.config.basePrompt = config.basePrompt;
         }
+        if (config.users !== undefined) {
+            this.config.users = config.users;
+        }
+        if (config.labels !== undefined) {
+            this.config.labels = config.labels;
+        }
         await this.save();
         this.logger.info('boardConfig', 'Board config updated');
         this._onDidChange.fire();
+    }
+
+    async addUser(name: string): Promise<void> {
+        const users = this.config.users ?? [];
+        if (!users.includes(name)) {
+            this.config.users = [...users, name];
+            await this.save();
+            this._onDidChange.fire();
+        }
+    }
+
+    async addLabel(name: string): Promise<void> {
+        const labels = this.config.labels ?? [];
+        if (!labels.includes(name)) {
+            this.config.labels = [...labels, name];
+            await this.save();
+            this._onDidChange.fire();
+        }
     }
 
     private async ensureGitignore(): Promise<void> {

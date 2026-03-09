@@ -1,3 +1,5 @@
+export type Priority = 'critical' | 'high' | 'medium' | 'low' | 'none';
+
 export interface Task {
     id: string;
     title: string;
@@ -5,6 +7,12 @@ export interface Task {
     created: string;
     updated: string;
     description: string;
+    priority?: Priority;
+    assignee?: string;
+    labels?: string[];
+    dueDate?: string;
+    archived?: boolean;
+    sortOrder?: number;
 }
 
 export interface LaneConfig {
@@ -15,6 +23,8 @@ export interface LaneConfig {
 export interface BoardConfig {
     lanes: LaneConfig[];
     basePrompt: string;
+    users?: string[];
+    labels?: string[];
 }
 
 export const DEFAULT_LANES: LaneConfig[] = [

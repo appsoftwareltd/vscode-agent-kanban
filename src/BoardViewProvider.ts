@@ -3,21 +3,24 @@ import type { TaskStore } from './TaskStore';
 import type { BoardConfigStore } from './BoardConfigStore';
 import type { LogService } from './LogService';
 import { NO_OP_LOGGER } from './LogService';
-import { isProtectedLane, PROTECTED_LANE_NAMES } from './types';
 
+/**
+ * Slim sidebar webview showing per-lane task counts and shortcuts.
+ * The full Kanban board lives in the KanbanEditorPanel (editor tab).
+ */
 export class BoardViewProvider implements vscode.WebviewViewProvider {
     private view?: vscode.WebviewView;
-    private readonly logger: LogService;
+    private readonly _logger: LogService;
 
     constructor(
-        private readonly extensionUri: vscode.Uri,
-        private readonly taskStore: TaskStore,
-        private readonly boardConfigStore: BoardConfigStore,
+        private readonly _extensionUri: vscode.Uri,
+        private readonly _taskStore: TaskStore,
+        private readonly _boardConfigStore: BoardConfigStore,
         logger?: LogService,
     ) {
-        this.logger = logger ?? NO_OP_LOGGER;
-        this.taskStore.onDidChange(() => this.refresh());
-        this.boardConfigStore.onDidChange(() => this.refresh());
+        this._logger = logger ?? NO_OP_LOGGER;
+        this._taskStore.onDidChange(() => this.refresh());
+        this._boardConfigStore.onDidChange(() => this.refresh());
     }
 
     resolveWebviewView(
@@ -27,473 +30,105 @@ export class BoardViewProvider implements vscode.WebviewViewProvider {
     ): void {
         this.view = webviewView;
 
-        webviewView.webview.options = {
-            enableScripts: true,
-            localResourceRoots: [this.extensionUri],
-        };
+        webviewView.webview.options = { enableScripts: true };
 
         webviewView.webview.onDidReceiveMessage(async (message) => {
-            this.logger.info('boardView', `Message: ${message.type}`);
-            await this.handleMessage(message);
+            this._logger.info('boardView', `Message: ${message.type}`);
+            if (message.type === 'openBoard') {
+                await vscode.commands.executeCommand('agentKanban.openBoard');
+            } else if (message.type === 'newTask') {
+                await vscode.commands.executeCommand('agentKanban.newTask');
+            }
         });
 
-        this.logger.info('boardView', 'Webview resolved');
+        this._logger.info('boardView', 'Sidebar webview resolved');
         this.refresh();
     }
 
-    async refresh(): Promise<void> {
+    refresh(): void {
         if (!this.view) {
             return;
         }
-
-        const tasks = this.taskStore.getAll();
-        const config = this.boardConfigStore.get();
-
-        this.view.webview.html = this.getHtml(this.view.webview, tasks, config);
+        const tasks = this._taskStore.getAll();
+        const config = this._boardConfigStore.get();
+        this.view.webview.html = this._getHtml(tasks, config);
     }
 
-    async createNewTask(): Promise<void> {
-        const title = await vscode.window.showInputBox({
-            prompt: 'Enter task title',
-            placeHolder: 'Task title',
-            validateInput: (v) => v.trim() ? null : 'Title cannot be empty',
-        });
-        if (!title) {
-            return;
-        }
-
-        const config = this.boardConfigStore.get();
-        const firstLane = config.lanes[0]?.id ?? 'todo';
-        const task = this.taskStore.createTask(title.trim(), firstLane);
-        await this.taskStore.save(task);
-        this.refresh();
-    }
-
-    private async handleMessage(message: any): Promise<void> {
-        switch (message.type) {
-            case 'openTask': {
-                const task = this.taskStore.get(message.taskId);
-                if (task) {
-                    const taskUri = this.taskStore.getTaskUri(message.taskId);
-                    const doc = await vscode.workspace.openTextDocument(taskUri);
-                    await vscode.window.showTextDocument(doc);
-                }
-                break;
-            }
-            case 'moveTask': {
-                const task = this.taskStore.get(message.taskId);
-                if (task) {
-                    task.lane = message.lane;
-                    await this.taskStore.save(task);
-                }
-                break;
-            }
-            case 'newTask':
-                await this.createNewTask();
-                break;
-            case 'addLane': {
-                const laneName = await vscode.window.showInputBox({
-                    prompt: 'Enter lane name',
-                    placeHolder: 'Lane name',
-                    validateInput: (v) => v.trim() ? null : 'Name cannot be empty',
-                });
-                if (laneName?.trim()) {
-                    const config = this.boardConfigStore.get();
-                    const id = laneName.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-');
-                    config.lanes.push({ id, name: laneName.trim() });
-                    await this.boardConfigStore.update({ lanes: config.lanes });
-                }
-                break;
-            }
-            case 'removeLane': {
-                const config = this.boardConfigStore.get();
-                const lane = config.lanes.find(l => l.id === message.laneId);
-                if (lane && isProtectedLane(lane)) {
-                    vscode.window.showWarningMessage(`The ${lane.name} lane cannot be removed.`);
-                    break;
-                }
-                const laneTasks = this.taskStore.getAll().filter(t => t.lane === message.laneId);
-                if (laneTasks.length > 0) {
-                    const confirm = await vscode.window.showWarningMessage(
-                        `Removing this lane will delete ${laneTasks.length} task${laneTasks.length === 1 ? '' : 's'}. Continue?`,
-                        { modal: true },
-                        'Yes',
-                    );
-                    if (confirm !== 'Yes') {
-                        break;
-                    }
-                    for (const task of laneTasks) {
-                        await this.taskStore.delete(task.id);
-                    }
-                }
-                config.lanes = config.lanes.filter(l => l.id !== message.laneId);
-                await this.boardConfigStore.update({ lanes: config.lanes });
-                break;
-            }
-            case 'renameLane': {
-                const config = this.boardConfigStore.get();
-                const lane = config.lanes.find(l => l.id === message.laneId);
-                if (!lane) { break; }
-                if (isProtectedLane(lane)) {
-                    vscode.window.showWarningMessage(`The ${lane.name} lane cannot be renamed.`);
-                    break;
-                }
-                const newName = await vscode.window.showInputBox({
-                    prompt: 'Rename lane',
-                    value: lane.name,
-                    validateInput: (v) => {
-                        if (!v.trim()) { return 'Name cannot be empty'; }
-                        if (PROTECTED_LANE_NAMES.includes(v.trim().toLowerCase())) {
-                            return `Cannot rename to "${v.trim()}" — that name is reserved`;
-                        }
-                        return null;
-                    },
-                });
-                if (newName?.trim()) {
-                    lane.name = newName.trim();
-                    await this.boardConfigStore.update({ lanes: config.lanes });
-                }
-                break;
-            }
-            case 'deleteTask': {
-                await this.taskStore.delete(message.taskId);
-                break;
-            }
-            case 'moveLane': {
-                const config = this.boardConfigStore.get();
-                const fromIndex = config.lanes.findIndex(l => l.id === message.sourceLaneId);
-                const toIndex = config.lanes.findIndex(l => l.id === message.targetLaneId);
-                if (fromIndex !== -1 && toIndex !== -1 && fromIndex !== toIndex) {
-                    const [moved] = config.lanes.splice(fromIndex, 1);
-                    config.lanes.splice(toIndex, 0, moved);
-                    await this.boardConfigStore.update({ lanes: config.lanes });
-                }
-                break;
-            }
-        }
-    }
-
-    private getHtml(webview: vscode.Webview, tasks: any[], config: any): string {
+    private _getHtml(tasks: any[], config: any): string {
         const nonce = getNonce();
-        const lanes = config.lanes || [];
+        const lanes: any[] = config.lanes ?? [];
 
-        const laneHtml = lanes.map((lane: any) => {
-            const laneTasks = tasks.filter((t: any) => t.lane === lane.id);
-            const cardsHtml = laneTasks.map((t: any) => `
-                <div class="card" draggable="true" data-task-id="${escapeHtml(t.id)}">
-                    <div class="card-title">${escapeHtml(t.title)}</div>
-                    <div class="card-meta">${escapeHtml(new Date(t.updated).toLocaleDateString())}</div>
-                    <button class="card-delete" data-delete-task-id="${escapeHtml(t.id)}" title="Delete task">&times;</button>
-                </div>
-            `).join('');
+        const totalActive = tasks.filter((t: any) => t.lane !== 'done').length;
 
-            const protected_ = isProtectedLane(lane);
-            return `
-                <div class="lane" data-lane-id="${escapeHtml(lane.id)}">
-                    <div class="lane-header" draggable="true" data-drag-lane-id="${escapeHtml(lane.id)}">
-                        <span class="lane-grip" title="Drag to reorder">&#x2630;</span>
-                        <span class="lane-title${protected_ ? '' : ' lane-title-renameable'}" ${protected_ ? '' : `data-rename-lane-id="${escapeHtml(lane.id)}"`}>${escapeHtml(lane.name)}</span>
-                        <span class="lane-count">${laneTasks.length}</span>
-                        ${protected_ ? '' : `<button class="lane-remove" data-remove-lane-id="${escapeHtml(lane.id)}" title="Remove lane">&times;</button>`}
-                    </div>
-                    <div class="lane-cards" data-lane-id="${escapeHtml(lane.id)}">
-                        ${cardsHtml}
-                    </div>
-                </div>
-            `;
-        }).join('');
+        const lanesHtml = lanes
+            .map((lane: any) => {
+                const count = tasks.filter((t: any) => t.lane === lane.id).length;
+                return `<div class="lane-row">
+                    <span class="lane-name">${escapeHtml(lane.name)}</span>
+                    <span class="lane-cnt">${count}</span>
+                </div>`;
+            })
+            .join('');
 
-        return /*html*/`<!DOCTYPE html>
+        return `<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'nonce-${nonce}'; script-src 'nonce-${nonce}';">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'nonce-${nonce}'; script-src 'nonce-${nonce}';">
     <style nonce="${nonce}">
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body {
             font-family: var(--vscode-font-family);
             font-size: var(--vscode-font-size);
             color: var(--vscode-foreground);
-            background: var(--vscode-sideBar-background);
-            padding: 8px;
-            overflow-x: auto;
+            padding: 10px 8px;
         }
-        .toolbar {
-            display: flex;
-            gap: 8px;
-            margin-bottom: 12px;
-            flex-wrap: wrap;
-        }
-        .toolbar button {
+        .actions { display: flex; gap: 6px; margin-bottom: 14px; flex-wrap: wrap; }
+        .btn {
             background: var(--vscode-button-background);
             color: var(--vscode-button-foreground);
-            border: none;
-            padding: 4px 12px;
-            border-radius: 3px;
-            cursor: pointer;
-            font-size: 12px;
+            border: none; padding: 4px 10px; border-radius: 3px;
+            cursor: pointer; font-size: 12px; flex: 1;
+            display: inline-flex; align-items: center; justify-content: center; gap: 6px;
         }
-        .toolbar button:hover {
-            background: var(--vscode-button-hoverBackground);
+        .btn:hover { background: var(--vscode-button-hoverBackground); }
+        .btn-sec {
+            background: rgba(255, 255, 255, 0.12);
+            color: var(--vscode-button-secondaryForeground);
         }
-        .board {
-            display: flex;
-            gap: 12px;
-            min-height: 200px;
-            overflow-x: auto;
-            padding-bottom: 8px;
+        .btn-sec:hover { background: rgba(255, 255, 255, 0.18); }
+        .section-label {
+            font-size: 10px; font-weight: 700; text-transform: uppercase;
+            letter-spacing: 0.6px; color: var(--vscode-descriptionForeground);
+            margin-bottom: 6px;
         }
-        .lane {
-            min-width: 180px;
-            max-width: 260px;
-            flex: 1;
-            background: var(--vscode-editorGroupHeader-tabsBackground);
-            border-radius: 6px;
-            display: flex;
-            flex-direction: column;
+        .lanes { display: flex; flex-direction: column; gap: 3px; }
+        .lane-row {
+            display: flex; justify-content: space-between; align-items: center;
+            padding: 3px 2px; font-size: 12px;
         }
-        .lane-header {
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            padding: 8px 10px;
-            font-weight: 600;
-            font-size: 12px;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            color: var(--vscode-descriptionForeground);
-            border-bottom: 1px solid var(--vscode-widget-border);
-        }
-        .lane-title { flex: 1; cursor: default; }
-        .lane-title-renameable { cursor: pointer; }
-        .lane-grip {
-            cursor: grab;
-            opacity: 0.4;
-            font-size: 11px;
-            user-select: none;
-            padding-right: 2px;
-        }
-        .lane-grip:hover { opacity: 0.8; }
-        .lane-header[draggable="true"]:active .lane-grip { cursor: grabbing; }
-        .lane.drag-over-lane {
-            outline: 2px solid var(--vscode-focusBorder);
-            outline-offset: -2px;
-            border-radius: 6px;
-        }
-        .lane.dragging-lane { opacity: 0.4; }
-        .lane-count {
+        .lane-name { color: var(--vscode-foreground); font-weight: 500; }
+        .lane-cnt {
             background: var(--vscode-badge-background);
             color: var(--vscode-badge-foreground);
-            border-radius: 10px;
-            padding: 1px 7px;
-            font-size: 11px;
-            font-weight: 600;
+            border-radius: 10px; padding: 1px 7px;
+            font-size: 11px; font-weight: 600;
         }
-        .lane-remove {
-            background: none;
-            border: none;
-            color: var(--vscode-descriptionForeground);
-            cursor: pointer;
-            font-size: 16px;
-            line-height: 1;
-            opacity: 0.5;
-            padding: 0 2px;
-        }
-        .lane-remove:hover { opacity: 1; color: var(--vscode-errorForeground); }
-        .lane-cards {
-            flex: 1;
-            padding: 6px;
-            display: flex;
-            flex-direction: column;
-            gap: 6px;
-            min-height: 50px;
-        }
-        .lane-cards.drag-over {
-            background: var(--vscode-list-hoverBackground);
-            border-radius: 4px;
-        }
-        .card {
-            position: relative;
-            background: var(--vscode-editor-background);
-            border: 1px solid var(--vscode-widget-border);
-            border-radius: 4px;
-            padding: 8px 10px;
-            cursor: pointer;
-            transition: border-color 0.15s;
-        }
-        .card:hover {
-            border-color: var(--vscode-focusBorder);
-        }
-        .card.dragging { opacity: 0.4; }
-        .card-title {
-            font-size: 13px;
-            font-weight: 500;
-            margin-bottom: 4px;
-            padding-right: 16px;
-        }
-        .card-meta {
-            font-size: 11px;
-            color: var(--vscode-descriptionForeground);
-        }
-        .card-delete {
-            position: absolute;
-            top: 4px;
-            right: 6px;
-            background: none;
-            border: none;
-            color: var(--vscode-descriptionForeground);
-            cursor: pointer;
-            font-size: 14px;
-            opacity: 0;
-            transition: opacity 0.15s;
-            padding: 0 2px;
-        }
-        .card:hover .card-delete { opacity: 0.6; }
-        .card-delete:hover { opacity: 1; color: var(--vscode-errorForeground); }
+        .summary { font-size: 11px; color: var(--vscode-descriptionForeground); margin-bottom: 10px; }
     </style>
 </head>
 <body>
-    <div class="toolbar">
-        <button id="btn-new-task">+ New Task</button>
-        <button id="btn-add-lane">+ Add Lane</button>
+    <div class="actions">
+        <button class="btn" id="btn-open"><svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="1" y="2" width="3" height="10" rx="0.5" fill="currentColor"/><rect x="5.5" y="2" width="3" height="7" rx="0.5" fill="currentColor"/><rect x="10" y="2" width="3" height="9" rx="0.5" fill="currentColor"/></svg>Open Board</button>
+        <button class="btn btn-sec" id="btn-new">+ New Task</button>
     </div>
-    <div class="board">
-        ${laneHtml}
-    </div>
+    <div class="summary">${totalActive} active task${totalActive !== 1 ? 's' : ''}</div>
+    <div class="section-label">Lanes</div>
+    <div class="lanes">${lanesHtml}</div>
     <script nonce="${nonce}">
         const vscode = acquireVsCodeApi();
-
-        document.getElementById('btn-new-task').addEventListener('click', () => {
-            vscode.postMessage({ type: 'newTask' });
-        });
-        document.getElementById('btn-add-lane').addEventListener('click', () => {
-            vscode.postMessage({ type: 'addLane' });
-        });
-
-        // Event delegation for cards, delete buttons, lane remove, lane rename
-        document.addEventListener('click', (e) => {
-            const deleteBtn = e.target.closest('[data-delete-task-id]');
-            if (deleteBtn) {
-                e.stopPropagation();
-                vscode.postMessage({ type: 'deleteTask', taskId: deleteBtn.dataset.deleteTaskId });
-                return;
-            }
-            const card = e.target.closest('.card');
-            if (card) {
-                vscode.postMessage({ type: 'openTask', taskId: card.dataset.taskId });
-                return;
-            }
-            const removeBtn = e.target.closest('[data-remove-lane-id]');
-            if (removeBtn) {
-                vscode.postMessage({ type: 'removeLane', laneId: removeBtn.dataset.removeLaneId });
-                return;
-            }
-        });
-        document.addEventListener('dblclick', (e) => {
-            const renameEl = e.target.closest('[data-rename-lane-id]');
-            if (renameEl) {
-                vscode.postMessage({ type: 'renameLane', laneId: renameEl.dataset.renameLaneId });
-            }
-        });
-
-        // Drag and drop — tasks
-        let draggedTaskId = null;
-        // Drag and drop — lanes
-        let draggedLaneId = null;
-
-        document.addEventListener('dragstart', (e) => {
-            // Lane header drag
-            const laneHeader = e.target.closest?.('[data-drag-lane-id]');
-            if (laneHeader) {
-                draggedLaneId = laneHeader.dataset.dragLaneId;
-                e.dataTransfer.setData('application/x-lane-id', draggedLaneId);
-                e.dataTransfer.effectAllowed = 'move';
-                const laneEl = laneHeader.closest('.lane');
-                if (laneEl) laneEl.classList.add('dragging-lane');
-                return;
-            }
-            // Card drag
-            const card = e.target.closest?.('.card');
-            if (!card) return;
-            draggedTaskId = card.dataset.taskId;
-            card.classList.add('dragging');
-            e.dataTransfer.effectAllowed = 'move';
-        });
-
-        document.addEventListener('dragend', (e) => {
-            // Lane drag end
-            if (draggedLaneId) {
-                document.querySelectorAll('.lane').forEach(el => {
-                    el.classList.remove('dragging-lane');
-                    el.classList.remove('drag-over-lane');
-                });
-                draggedLaneId = null;
-                return;
-            }
-            // Card drag end
-            const card = e.target.closest?.('.card');
-            if (card) card.classList.remove('dragging');
-            document.querySelectorAll('.lane-cards').forEach(el => el.classList.remove('drag-over'));
-            draggedTaskId = null;
-        });
-
-        document.addEventListener('dragover', (e) => {
-            e.preventDefault();
-            if (draggedLaneId) {
-                const lane = e.target.closest?.('.lane');
-                if (lane && lane.dataset.laneId !== draggedLaneId) {
-                    // Clear all, then highlight target
-                    document.querySelectorAll('.lane').forEach(el => el.classList.remove('drag-over-lane'));
-                    lane.classList.add('drag-over-lane');
-                }
-                return;
-            }
-            const laneCards = e.target.closest?.('.lane-cards');
-            if (laneCards) {
-                laneCards.classList.add('drag-over');
-            }
-        });
-
-        document.addEventListener('dragleave', (e) => {
-            if (draggedLaneId) {
-                const lane = e.target.closest?.('.lane');
-                if (lane && !lane.contains(e.relatedTarget)) {
-                    lane.classList.remove('drag-over-lane');
-                }
-                return;
-            }
-            const laneCards = e.target.closest?.('.lane-cards');
-            if (laneCards && !laneCards.contains(e.relatedTarget)) {
-                laneCards.classList.remove('drag-over');
-            }
-        });
-
-        document.addEventListener('drop', (e) => {
-            e.preventDefault();
-            if (draggedLaneId) {
-                const targetLane = e.target.closest?.('.lane');
-                if (targetLane && targetLane.dataset.laneId !== draggedLaneId) {
-                    vscode.postMessage({
-                        type: 'moveLane',
-                        sourceLaneId: draggedLaneId,
-                        targetLaneId: targetLane.dataset.laneId,
-                    });
-                }
-                document.querySelectorAll('.lane').forEach(el => {
-                    el.classList.remove('dragging-lane');
-                    el.classList.remove('drag-over-lane');
-                });
-                draggedLaneId = null;
-                return;
-            }
-            const laneCards = e.target.closest?.('.lane-cards');
-            if (laneCards && draggedTaskId) {
-                const lane = laneCards.dataset.laneId;
-                vscode.postMessage({ type: 'moveTask', taskId: draggedTaskId, lane });
-            }
-            document.querySelectorAll('.lane-cards').forEach(el => el.classList.remove('drag-over'));
-        });
+        document.getElementById('btn-open').addEventListener('click', () => vscode.postMessage({ type: 'openBoard' }));
+        document.getElementById('btn-new').addEventListener('click', () => vscode.postMessage({ type: 'newTask' }));
     </script>
 </body>
 </html>`;

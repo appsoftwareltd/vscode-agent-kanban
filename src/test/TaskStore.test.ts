@@ -121,7 +121,7 @@ describe('TaskStore', () => {
 
             expect(md.startsWith('---\n')).toBe(true);
             expect(md).toContain('title: YAML validity');
-            expect(md).toContain('lane: done');
+            expect(md).toContain('lane: DONE');
             expect(md).toContain('## Conversation');
         });
 
@@ -192,6 +192,170 @@ describe('TaskStore', () => {
 
             const md = TaskStore.serialise(task);
             expect(md).toContain('description: Some details here');
+        });
+
+        it('should serialise and deserialise priority', () => {
+            const task: Task = {
+                id: 'task_005',
+                title: 'Priority task',
+                lane: 'doing',
+                created: '2026-03-08T10:00:00.000Z',
+                updated: '2026-03-08T10:00:00.000Z',
+                description: '',
+                priority: 'high',
+            };
+            const md = TaskStore.serialise(task);
+            expect(md).toContain('priority: high');
+            const result = TaskStore.deserialise(md);
+            expect(result!.priority).toBe('high');
+        });
+
+        it('should serialise and deserialise assignee', () => {
+            const task: Task = {
+                id: 'task_006',
+                title: 'Assigned task',
+                lane: 'todo',
+                created: '2026-03-08T10:00:00.000Z',
+                updated: '2026-03-08T10:00:00.000Z',
+                description: '',
+                assignee: 'alice',
+            };
+            const md = TaskStore.serialise(task);
+            expect(md).toContain('assignee: alice');
+            const result = TaskStore.deserialise(md);
+            expect(result!.assignee).toBe('alice');
+        });
+
+        it('should serialise and deserialise labels', () => {
+            const task: Task = {
+                id: 'task_007',
+                title: 'Labelled task',
+                lane: 'todo',
+                created: '2026-03-08T10:00:00.000Z',
+                updated: '2026-03-08T10:00:00.000Z',
+                description: '',
+                labels: ['backend', 'api'],
+            };
+            const md = TaskStore.serialise(task);
+            const result = TaskStore.deserialise(md);
+            expect(result!.labels).toEqual(['backend', 'api']);
+        });
+
+        it('should serialise and deserialise dueDate', () => {
+            const task: Task = {
+                id: 'task_008',
+                title: 'Due task',
+                lane: 'todo',
+                created: '2026-03-08T10:00:00.000Z',
+                updated: '2026-03-08T10:00:00.000Z',
+                description: '',
+                dueDate: '2026-04-01',
+            };
+            const md = TaskStore.serialise(task);
+            expect(md).toContain('dueDate: ');
+            const result = TaskStore.deserialise(md);
+            expect(result!.dueDate).toBe('2026-04-01');
+        });
+
+        it('should omit optional metadata fields when not set', () => {
+            const task: Task = {
+                id: 'task_009',
+                title: 'Minimal',
+                lane: 'todo',
+                created: '2026-03-08T10:00:00.000Z',
+                updated: '2026-03-08T10:00:00.000Z',
+                description: '',
+            };
+            const md = TaskStore.serialise(task);
+            expect(md).not.toMatch(/^priority:/m);
+            expect(md).not.toMatch(/^assignee:/m);
+            expect(md).not.toMatch(/^labels:/m);
+            expect(md).not.toMatch(/^dueDate:/m);
+        });
+
+        it('should serialise and deserialise archived flag', () => {
+            const task: Task = {
+                id: 'task_010',
+                title: 'Archived task',
+                lane: 'done',
+                created: '2026-03-08T10:00:00.000Z',
+                updated: '2026-03-08T10:00:00.000Z',
+                description: '',
+                archived: true,
+            };
+            const md = TaskStore.serialise(task);
+            expect(md).toContain('archived: true');
+            const result = TaskStore.deserialise(md);
+            expect(result!.archived).toBe(true);
+        });
+
+        it('should omit archived when false or undefined', () => {
+            const task: Task = {
+                id: 'task_011',
+                title: 'Not archived',
+                lane: 'todo',
+                created: '2026-03-08T10:00:00.000Z',
+                updated: '2026-03-08T10:00:00.000Z',
+                description: '',
+            };
+            const md = TaskStore.serialise(task);
+            expect(md).not.toMatch(/^archived:/m);
+            const result = TaskStore.deserialise(md);
+            expect(result!.archived).toBeUndefined();
+        });
+
+        it('should serialise and deserialise sortOrder', () => {
+            const task: Task = {
+                id: 'task_012',
+                title: 'Ordered task',
+                lane: 'doing',
+                created: '2026-03-09T10:00:00.000Z',
+                updated: '2026-03-09T10:00:00.000Z',
+                description: '',
+                sortOrder: 2.5,
+            };
+            const md = TaskStore.serialise(task);
+            expect(md).toContain('sortOrder: 2.5');
+            const result = TaskStore.deserialise(md);
+            expect(result!.sortOrder).toBe(2.5);
+        });
+
+        it('should omit sortOrder when undefined', () => {
+            const task: Task = {
+                id: 'task_013',
+                title: 'No order',
+                lane: 'todo',
+                created: '2026-03-09T10:00:00.000Z',
+                updated: '2026-03-09T10:00:00.000Z',
+                description: '',
+            };
+            const md = TaskStore.serialise(task);
+            expect(md).not.toMatch(/^sortOrder:/m);
+            const result = TaskStore.deserialise(md);
+            expect(result!.sortOrder).toBeUndefined();
+        });
+
+        it('should serialise lane as uppercase in YAML', () => {
+            const task: Task = {
+                id: 'task_014',
+                title: 'Lane case test',
+                lane: 'doing',
+                created: '2026-03-09T10:00:00.000Z',
+                updated: '2026-03-09T10:00:00.000Z',
+                description: '',
+            };
+            const md = TaskStore.serialise(task);
+            expect(md).toContain('lane: DOING');
+        });
+
+        it('should deserialise lane as lowercase regardless of input case', () => {
+            const md = '---\ntitle: Test\nlane: DOING\ncreated: 2026-03-09T10:00:00.000Z\nupdated: 2026-03-09T10:00:00.000Z\n---\n';
+            const result = TaskStore.deserialise(md);
+            expect(result!.lane).toBe('doing');
+
+            const md2 = '---\ntitle: Test\nlane: Todo\ncreated: 2026-03-09T10:00:00.000Z\nupdated: 2026-03-09T10:00:00.000Z\n---\n';
+            const result2 = TaskStore.deserialise(md2);
+            expect(result2!.lane).toBe('todo');
         });
     });
 

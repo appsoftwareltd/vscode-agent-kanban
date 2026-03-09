@@ -31,7 +31,8 @@ updated: <ISO 8601>
 description: <Brief description>
 ---
 
-Note: The task lane is managed by the extension, you do not edit the lane.
+IMPORTANT: The task lane is managed by the user / extension, you do not edit the lane.
+IMPORTANT: The conversation should happen in the task file. You may use the chat window, but keep it to summary information. Planning and recording of what action was taken goes in the task file.
 
 ## Conversation
 
@@ -42,13 +43,17 @@ Note: The task lane is managed by the extension, you do not edit the lane.
 [agent] 
 
 <response>
+
+[user]
 ```
 
 **Rules:**
+
 - Append new entries at the end — never modify or delete existing ones
 - Start each message with `[user]` or `[agent]` on its own line; blank line between messages
-- After your response, add `[user]` on a new line for the user's next entry
+- After your response, you must `[user]` on a new line for the user's next entry
 - Look for and honor inline `[comment] <text>` annotations from the user
+- Ask questions and give the user options if is needed or may improve the final implementation.
 
 ## TODO File Format
 

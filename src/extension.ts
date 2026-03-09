@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { BoardViewProvider } from './BoardViewProvider';
+import { KanbanEditorPanel } from './KanbanEditorPanel';
 import { TaskStore } from './TaskStore';
 import { BoardConfigStore } from './BoardConfigStore';
 import { ChatParticipant } from './agents/ChatParticipant';
@@ -40,15 +41,25 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         ),
     );
 
+    // Register the webview panel serialiser so the board panel survives reloads
     context.subscriptions.push(
-        vscode.commands.registerCommand('agentKanban.openBoard', () => {
-            vscode.commands.executeCommand('agentKanban.boardView.focus');
+        vscode.window.registerWebviewPanelSerializer(KanbanEditorPanel.VIEW_TYPE, {
+            async deserializeWebviewPanel(panel: vscode.WebviewPanel) {
+                KanbanEditorPanel.revive(panel, context.extensionUri, taskStore, boardConfigStore, logger);
+            },
         }),
     );
 
     context.subscriptions.push(
-        vscode.commands.registerCommand('agentKanban.newTask', async () => {
-            boardViewProvider.createNewTask();
+        vscode.commands.registerCommand('agentKanban.openBoard', () => {
+            KanbanEditorPanel.createOrShow(context.extensionUri, taskStore, boardConfigStore, logger);
+        }),
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('agentKanban.newTask', () => {
+            KanbanEditorPanel.createOrShow(context.extensionUri, taskStore, boardConfigStore, logger);
+            KanbanEditorPanel.currentPanel?.triggerCreateModal();
         }),
     );
 
@@ -95,16 +106,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const mdWatcher = vscode.workspace.createFileSystemWatcher(
         new vscode.RelativePattern(workspaceFolder, '.agentkanban/tasks/**/*.md'),
     );
-    mdWatcher.onDidChange(() => { taskStore.reload(); boardViewProvider.refresh(); });
-    mdWatcher.onDidCreate(() => { taskStore.reload(); boardViewProvider.refresh(); });
-    mdWatcher.onDidDelete(() => { taskStore.reload(); boardViewProvider.refresh(); });
+    const reloadTasks = async () => { await taskStore.reload(); };
+    mdWatcher.onDidChange(reloadTasks);
+    mdWatcher.onDidCreate(reloadTasks);
+    mdWatcher.onDidDelete(reloadTasks);
     context.subscriptions.push(mdWatcher);
 
     // File watcher for board config
     const yamlWatcher = vscode.workspace.createFileSystemWatcher(
         new vscode.RelativePattern(workspaceFolder, '.agentkanban/board.yaml'),
     );
-    yamlWatcher.onDidChange(() => { boardConfigStore.init(); boardViewProvider.refresh(); });
+    yamlWatcher.onDidChange(async () => { await boardConfigStore.init(); });
     context.subscriptions.push(yamlWatcher);
 
     // Initialise stores

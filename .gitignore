@@ -15,3 +15,7 @@ Thumbs.db
 
 AGENTS.md
 .agentkanban/
+
+# Developer tooling
+
+.devtool/

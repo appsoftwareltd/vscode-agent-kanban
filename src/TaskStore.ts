@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { parse, stringify } from 'yaml';
-import type { Task } from './types';
+import type { Task, Priority } from './types';
 import type { LogService } from './LogService';
 import { NO_OP_LOGGER } from './LogService';
 
@@ -101,6 +101,22 @@ export class TaskStore {
         this._onDidChange.fire();
     }
 
+    /** Save a task with an explicit markdown body (used when creating tasks with descriptions). */
+    async saveWithBody(task: Task, body: string): Promise<void> {
+        task.updated = new Date().toISOString();
+        this.tasks.set(task.id, task);
+        try {
+            await vscode.workspace.fs.createDirectory(this.tasksUri);
+        } catch {
+            // directory may already exist
+        }
+        const uri = this.getTaskUri(task.id);
+        const content = new TextEncoder().encode(TaskStore.serialise(task, body));
+        await vscode.workspace.fs.writeFile(uri, content);
+        this.logger.info('taskStore', `Saved task with body ${task.id}`);
+        this._onDidChange.fire();
+    }
+
     async delete(id: string): Promise<void> {
         this.tasks.delete(id);
         const taskUri = this.getTaskUri(id);
@@ -179,12 +195,30 @@ export class TaskStore {
     static serialise(task: Task, body?: string): string {
         const frontmatter: Record<string, unknown> = {
             title: task.title,
-            lane: task.lane,
+            lane: task.lane.toUpperCase(),
             created: task.created,
             updated: task.updated,
         };
         if (task.description) {
             frontmatter.description = task.description;
+        }
+        if (task.priority) {
+            frontmatter.priority = task.priority;
+        }
+        if (task.assignee) {
+            frontmatter.assignee = task.assignee;
+        }
+        if (task.labels?.length) {
+            frontmatter.labels = task.labels;
+        }
+        if (task.dueDate) {
+            frontmatter.dueDate = task.dueDate;
+        }
+        if (task.archived) {
+            frontmatter.archived = true;
+        }
+        if (task.sortOrder != null) {
+            frontmatter.sortOrder = task.sortOrder;
         }
         const yamlStr = stringify(frontmatter, { lineWidth: 0 }).trimEnd();
         const mdBody = body ?? '\n## Conversation\n';
@@ -208,10 +242,16 @@ export class TaskStore {
             return {
                 id: '', // Caller sets this from filename
                 title: data.title,
-                lane: (data.lane as string) ?? 'todo',
+                lane: ((data.lane as string) ?? 'todo').toLowerCase(),
                 created: (data.created as string) ?? new Date().toISOString(),
                 updated: (data.updated as string) ?? new Date().toISOString(),
                 description: (data.description as string) ?? '',
+                priority: (data.priority as Priority) || undefined,
+                assignee: (data.assignee as string) || undefined,
+                labels: Array.isArray(data.labels) ? (data.labels as string[]) : undefined,
+                dueDate: (data.dueDate as string) || undefined,
+                archived: data.archived === true ? true : undefined,
+                sortOrder: typeof data.sortOrder === 'number' ? data.sortOrder : undefined,
             };
         } catch {
             return null;

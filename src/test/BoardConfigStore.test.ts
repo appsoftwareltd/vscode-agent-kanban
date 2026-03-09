@@ -153,4 +153,30 @@ describe('BoardConfigStore', () => {
             expect(gitignoreCall).toBeUndefined();
         });
     });
+
+    describe('users and labels registry', () => {
+        it('should round-trip config with users and labels', () => {
+            const config: BoardConfig = {
+                lanes: [{ id: 'todo', name: 'Todo' }],
+                basePrompt: '',
+                users: ['alice', 'bob'],
+                labels: ['backend', 'frontend'],
+            };
+            const yaml = BoardConfigStore.serialise(config);
+            const result = BoardConfigStore.deserialise(yaml);
+            expect(result.users).toEqual(['alice', 'bob']);
+            expect(result.labels).toEqual(['backend', 'frontend']);
+        });
+
+        it('should handle missing users/labels gracefully', () => {
+            const config: BoardConfig = {
+                lanes: [{ id: 'todo', name: 'Todo' }],
+                basePrompt: '',
+            };
+            const yaml = BoardConfigStore.serialise(config);
+            const result = BoardConfigStore.deserialise(yaml);
+            expect(result.users).toBeUndefined();
+            expect(result.labels).toBeUndefined();
+        });
+    });
 });
