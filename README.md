@@ -12,6 +12,8 @@ Agent Kanban references its own instruction set, so it doesn't interfere with yo
 
 ![VS Code Agent Kanban](https://github.com/appsoftwareltd/vscode-agent-kanban/blob/main/images/icon.png?raw=true)
 
+<img width="1888" height="1024" alt="image" src="https://github.com/user-attachments/assets/b7ebe7a8-87a8-41bb-84c9-f7f298408ee7" />
+
 ## Features
 
 - **Kanban Board** — Visual board with customisable lanes (default: Todo, Doing, Done). Drag-and-drop task cards between lanes.
