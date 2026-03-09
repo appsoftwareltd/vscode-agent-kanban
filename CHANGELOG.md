@@ -2,7 +2,15 @@
 
 All notable changes to AS Notes will be documented here.
 
-## Pending Release
+
+## [0.2.1] - 2026-03-07
+
+### Added
+
+- Name bump
+- Release polish
+
+## [0.1.2] - 2026-03-07
 
 ### Added
 
