@@ -3,6 +3,7 @@ import type { TaskStore } from './TaskStore';
 import type { BoardConfigStore } from './BoardConfigStore';
 import type { LogService } from './LogService';
 import { NO_OP_LOGGER } from './LogService';
+import { displayLane } from './types';
 
 /**
  * Slim sidebar webview showing per-lane task counts and shortcuts.
@@ -61,10 +62,10 @@ export class BoardViewProvider implements vscode.WebviewViewProvider {
         const totalActive = tasks.filter((t: any) => t.lane !== 'done').length;
 
         const lanesHtml = lanes
-            .map((lane: any) => {
-                const count = tasks.filter((t: any) => t.lane === lane.id).length;
+            .map((lane: string) => {
+                const count = tasks.filter((t: any) => t.lane === lane).length;
                 return `<div class="lane-row">
-                    <span class="lane-name">${escapeHtml(lane.name)}</span>
+                    <span class="lane-name">${escapeHtml(displayLane(lane))}</span>
                     <span class="lane-cnt">${count}</span>
                 </div>`;
             })

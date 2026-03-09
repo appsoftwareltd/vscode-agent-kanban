@@ -1,6 +1,7 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { TaskStore } from '../TaskStore';
 import type { Task } from '../types';
+import { workspace } from 'vscode';
 
 describe('TaskStore', () => {
     describe('slugify', () => {
@@ -101,7 +102,8 @@ describe('TaskStore', () => {
 
             expect(result).not.toBeNull();
             expect(result!.title).toBe(task.title);
-            expect(result!.lane).toBe(task.lane);
+            // lane is not serialised — determined by directory
+            expect(result!.lane).toBe('');
             expect(result!.created).toBe(task.created);
             expect(result!.updated).toBe(task.updated);
             expect(result!.description).toBe(task.description);
@@ -121,7 +123,8 @@ describe('TaskStore', () => {
 
             expect(md.startsWith('---\n')).toBe(true);
             expect(md).toContain('title: YAML validity');
-            expect(md).toContain('lane: DONE');
+            // lane is NOT written to frontmatter — determined by directory
+            expect(md).not.toMatch(/^lane:/m);
             expect(md).toContain('## Conversation');
         });
 
@@ -153,7 +156,7 @@ describe('TaskStore', () => {
                 description: '',
             };
 
-            const body = '\n## Conversation\n\n[user]: Hello\n';
+            const body = '\n## Conversation\n\n[user] Hello\n';
             const md1 = TaskStore.serialise(task, body);
             const { body: body1 } = TaskStore.splitFrontmatter(md1);
             const md2 = TaskStore.serialise(task, body1);
@@ -273,36 +276,7 @@ describe('TaskStore', () => {
             expect(md).not.toMatch(/^dueDate:/m);
         });
 
-        it('should serialise and deserialise archived flag', () => {
-            const task: Task = {
-                id: 'task_010',
-                title: 'Archived task',
-                lane: 'done',
-                created: '2026-03-08T10:00:00.000Z',
-                updated: '2026-03-08T10:00:00.000Z',
-                description: '',
-                archived: true,
-            };
-            const md = TaskStore.serialise(task);
-            expect(md).toContain('archived: true');
-            const result = TaskStore.deserialise(md);
-            expect(result!.archived).toBe(true);
-        });
 
-        it('should omit archived when false or undefined', () => {
-            const task: Task = {
-                id: 'task_011',
-                title: 'Not archived',
-                lane: 'todo',
-                created: '2026-03-08T10:00:00.000Z',
-                updated: '2026-03-08T10:00:00.000Z',
-                description: '',
-            };
-            const md = TaskStore.serialise(task);
-            expect(md).not.toMatch(/^archived:/m);
-            const result = TaskStore.deserialise(md);
-            expect(result!.archived).toBeUndefined();
-        });
 
         it('should serialise and deserialise sortOrder', () => {
             const task: Task = {
@@ -335,7 +309,7 @@ describe('TaskStore', () => {
             expect(result!.sortOrder).toBeUndefined();
         });
 
-        it('should serialise lane as uppercase in YAML', () => {
+        it('should not serialise lane to YAML (determined by directory)', () => {
             const task: Task = {
                 id: 'task_014',
                 title: 'Lane case test',
@@ -345,17 +319,14 @@ describe('TaskStore', () => {
                 description: '',
             };
             const md = TaskStore.serialise(task);
-            expect(md).toContain('lane: DOING');
+            expect(md).not.toMatch(/^lane:/m);
         });
 
-        it('should deserialise lane as lowercase regardless of input case', () => {
+        it('should set lane to empty string on deserialise (caller populates)', () => {
             const md = '---\ntitle: Test\nlane: DOING\ncreated: 2026-03-09T10:00:00.000Z\nupdated: 2026-03-09T10:00:00.000Z\n---\n';
             const result = TaskStore.deserialise(md);
-            expect(result!.lane).toBe('doing');
-
-            const md2 = '---\ntitle: Test\nlane: Todo\ncreated: 2026-03-09T10:00:00.000Z\nupdated: 2026-03-09T10:00:00.000Z\n---\n';
-            const result2 = TaskStore.deserialise(md2);
-            expect(result2!.lane).toBe('todo');
+            // lane is ignored from frontmatter — caller sets it from directory name
+            expect(result!.lane).toBe('');
         });
     });
 
@@ -369,15 +340,15 @@ describe('TaskStore', () => {
             expect(TaskStore.deserialise(text)).toBeNull();
         });
 
-        it('should default lane to todo when missing', () => {
+        it('should set lane to empty string (caller populates from directory)', () => {
             const text = '---\ntitle: Test\ncreated: "2026-03-08T10:00:00.000Z"\nupdated: "2026-03-08T10:00:00.000Z"\n---\n\n## Conversation\n';
             const task = TaskStore.deserialise(text);
             expect(task).not.toBeNull();
-            expect(task!.lane).toBe('todo');
+            expect(task!.lane).toBe('');
         });
 
         it('should set empty id (caller populates from filename)', () => {
-            const text = '---\ntitle: Test\nlane: doing\n---\n\n';
+            const text = '---\ntitle: Test\n---\n\n';
             const task = TaskStore.deserialise(text);
             expect(task).not.toBeNull();
             expect(task!.id).toBe('');
@@ -463,20 +434,183 @@ describe('TaskStore', () => {
     });
 
     describe('getTaskUri / getTodoUri', () => {
-        it('should construct task URI from id', () => {
+        it('should construct task URI using lane subdirectory from cache', () => {
+            const uri = { scheme: 'file', fsPath: '/test', path: '/test', toString: () => '/test' } as any;
+            const store = new TaskStore(uri);
+
+            // Add task to cache so URI uses its lane directory
+            const task = store.createTask('Test', 'doing');
+            (store as any).tasks.set(task.id, task);
+
+            const taskUri = store.getTaskUri(task.id);
+            expect(taskUri.fsPath).toContain('doing');
+            expect(taskUri.fsPath).toContain(`${task.id}.md`);
+        });
+
+        it('should fall back to todo directory when task not in cache', () => {
             const uri = { scheme: 'file', fsPath: '/test', path: '/test', toString: () => '/test' } as any;
             const store = new TaskStore(uri);
 
             const taskUri = store.getTaskUri('task_20260308_143045123_abc123_test');
+            expect(taskUri.fsPath).toContain('todo');
             expect(taskUri.fsPath).toContain('task_20260308_143045123_abc123_test.md');
         });
 
-        it('should construct todo URI from task id', () => {
+        it('should construct todo URI using lane subdirectory from cache', () => {
+            const uri = { scheme: 'file', fsPath: '/test', path: '/test', toString: () => '/test' } as any;
+            const store = new TaskStore(uri);
+
+            const task = store.createTask('Test', 'doing');
+            (store as any).tasks.set(task.id, task);
+
+            const todoUri = store.getTodoUri(task.id);
+            expect(todoUri.fsPath).toContain('doing');
+            expect(todoUri.fsPath).toContain('todo_');
+        });
+
+        it('should fall back to todo directory for todo URI when task not in cache', () => {
             const uri = { scheme: 'file', fsPath: '/test', path: '/test', toString: () => '/test' } as any;
             const store = new TaskStore(uri);
 
             const todoUri = store.getTodoUri('task_20260308_143045123_abc123_test');
+            expect(todoUri.fsPath).toContain('todo');
             expect(todoUri.fsPath).toContain('todo_20260308_143045123_abc123_test.md');
+        });
+    });
+
+    describe('moveTaskToLane', () => {
+        let store: TaskStore;
+        let writtenFiles: Map<string, string>;
+        let deletedPaths: string[];
+        let renamedPaths: Array<{ from: string; to: string }>;
+
+        beforeEach(() => {
+            const uri = { scheme: 'file', fsPath: '/test', path: '/test', toString: () => '/test' } as any;
+            store = new TaskStore(uri);
+            writtenFiles = new Map();
+            deletedPaths = [];
+            renamedPaths = [];
+
+            vi.spyOn(workspace.fs, 'createDirectory').mockResolvedValue(undefined);
+            vi.spyOn(workspace.fs, 'writeFile').mockImplementation(async (u: any, content: Uint8Array) => {
+                writtenFiles.set(u.fsPath || u.path, new TextDecoder().decode(content));
+            });
+            vi.spyOn(workspace.fs, 'delete').mockImplementation(async (u: any) => {
+                deletedPaths.push(u.fsPath || u.path);
+            });
+            vi.spyOn(workspace.fs, 'stat').mockRejectedValue(new Error('not found'));
+            vi.spyOn(workspace.fs, 'rename').mockImplementation(async (from: any, to: any) => {
+                renamedPaths.push({ from: from.fsPath || from.path, to: to.fsPath || to.path });
+            });
+        });
+
+        afterEach(() => {
+            vi.restoreAllMocks();
+        });
+
+        it('should move task file from old lane to new lane directory', async () => {
+            const task = store.createTask('Move Me', 'todo');
+            (store as any).tasks.set(task.id, task);
+
+            // Mock readFile to return existing content at old location
+            const existingMd = TaskStore.serialise(task, '\n## Conversation\n\n[user] Hello\n');
+            vi.spyOn(workspace.fs, 'readFile').mockResolvedValue(
+                new TextEncoder().encode(existingMd),
+            );
+
+            await store.moveTaskToLane(task.id, 'doing');
+
+            // Should write to new location
+            const newPath = writtenFiles.keys().next().value;
+            expect(newPath).toContain('/doing/');
+            expect(newPath).toContain(`${task.id}.md`);
+
+            // Should delete old file
+            expect(deletedPaths.length).toBe(1);
+            expect(deletedPaths[0]).toContain('/todo/');
+            expect(deletedPaths[0]).toContain(`${task.id}.md`);
+
+            // In-memory lane should be updated
+            expect(store.get(task.id)!.lane).toBe('doing');
+        });
+
+        it('should preserve conversation body when moving', async () => {
+            const task = store.createTask('Body Test', 'todo');
+            (store as any).tasks.set(task.id, task);
+
+            const body = '\n## Conversation\n\n[user] Keep me\n\n[agent] Sure\n';
+            const existingMd = TaskStore.serialise(task, body);
+            vi.spyOn(workspace.fs, 'readFile').mockResolvedValue(
+                new TextEncoder().encode(existingMd),
+            );
+
+            await store.moveTaskToLane(task.id, 'done');
+
+            const written = writtenFiles.values().next().value;
+            expect(written).toContain('[user] Keep me');
+            expect(written).toContain('[agent] Sure');
+        });
+
+        it('should persist in-memory sortOrder changes after move', async () => {
+            const task = store.createTask('Sorted Task', 'todo');
+            task.sortOrder = 3.5;
+            (store as any).tasks.set(task.id, task);
+
+            // File on disk has no sortOrder yet
+            const oldTask = { ...task, sortOrder: undefined };
+            const existingMd = TaskStore.serialise(oldTask, '\n## Conversation\n\n[user]\n\n');
+            vi.spyOn(workspace.fs, 'readFile').mockResolvedValue(
+                new TextEncoder().encode(existingMd),
+            );
+
+            await store.moveTaskToLane(task.id, 'doing');
+
+            const written = writtenFiles.values().next().value;
+            expect(written).toContain('sortOrder: 3.5');
+        });
+
+        it('should persist in-memory meta fields after move', async () => {
+            const task = store.createTask('Meta Task', 'todo');
+            task.priority = 'high';
+            task.assignee = 'alice';
+            task.labels = ['bug'];
+            (store as any).tasks.set(task.id, task);
+
+            const existingMd = TaskStore.serialise(
+                { ...task, priority: undefined, assignee: undefined, labels: undefined },
+                '\n## Conversation\n\n[user]\n\n',
+            );
+            vi.spyOn(workspace.fs, 'readFile').mockResolvedValue(
+                new TextEncoder().encode(existingMd),
+            );
+
+            await store.moveTaskToLane(task.id, 'doing');
+
+            const written = writtenFiles.values().next().value;
+            expect(written).toContain('priority: high');
+            expect(written).toContain('assignee: alice');
+            expect(written).toContain('bug');
+        });
+
+        it('should not move when same lane (just save)', async () => {
+            const task = store.createTask('Same Lane', 'todo');
+            task.sortOrder = 1;
+            (store as any).tasks.set(task.id, task);
+
+            vi.spyOn(workspace.fs, 'readFile').mockResolvedValue(new Uint8Array());
+
+            await store.moveTaskToLane(task.id, 'todo');
+
+            // Should write a file (save) but not delete anything
+            expect(writtenFiles.size).toBe(1);
+            expect(deletedPaths.length).toBe(0);
+        });
+
+        it('should do nothing for unknown task id', async () => {
+            await store.moveTaskToLane('nonexistent', 'doing');
+
+            expect(writtenFiles.size).toBe(0);
+            expect(deletedPaths.length).toBe(0);
         });
     });
 });

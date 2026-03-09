@@ -89,6 +89,18 @@
                     {
                         "name": "task",
                         "description": "Select a task to work on: @kanban /task <task name>"
+                    },
+                    {
+                        "name": "plan",
+                        "description": "Plan the selected task (refreshes context)"
+                    },
+                    {
+                        "name": "todo",
+                        "description": "Generate TODOs for the selected task (refreshes context)"
+                    },
+                    {
+                        "name": "implement",
+                        "description": "Implement the selected task (refreshes context)"
                     }
                 ]
             }

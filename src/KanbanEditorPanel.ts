@@ -3,12 +3,8 @@ import type { TaskStore } from './TaskStore';
 import type { BoardConfigStore } from './BoardConfigStore';
 import type { LogService } from './LogService';
 import { NO_OP_LOGGER } from './LogService';
-import { isProtectedLane, PROTECTED_LANE_NAMES } from './types';
+import { isProtectedLane, isReservedLane, slugifyLane, PROTECTED_LANES } from './types';
 import type { Priority } from './types';
-
-function sanitiseLaneName(raw: string): string {
-    return raw.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
-}
 
 export class KanbanEditorPanel {
     public static readonly VIEW_TYPE = 'agentKanban.boardPanel';
@@ -168,7 +164,6 @@ export class KanbanEditorPanel {
 
     private async _sendState(): Promise<void> {
         const tasks = this._taskStore.getAll()
-            .filter((t) => !t.archived)
             .sort((a, b) => {
                 const sa = a.sortOrder ?? Date.parse(a.created);
                 const sb = b.sortOrder ?? Date.parse(b.created);
@@ -209,11 +204,16 @@ export class KanbanEditorPanel {
             case 'moveTask': {
                 const task = this._taskStore.get(message.taskId);
                 if (task) {
-                    task.lane = message.lane;
+                    const oldLane = task.lane;
+                    const newLane = message.lane;
                     if (typeof message.sortOrder === 'number') {
                         task.sortOrder = message.sortOrder;
                     }
-                    await this._taskStore.save(task);
+                    if (oldLane !== newLane) {
+                        await this._taskStore.moveTaskToLane(message.taskId, newLane);
+                    } else {
+                        await this._taskStore.save(task);
+                    }
                 }
                 break;
             }
@@ -230,7 +230,7 @@ export class KanbanEditorPanel {
                     break;
                 }
                 const config = this._boardConfigStore.get();
-                const firstLane = config.lanes[0]?.id ?? 'todo';
+                const firstLane = config.lanes[0] ?? 'todo';
                 const task = this._taskStore.createTask(title.trim(), firstLane);
                 await this._taskStore.save(task);
                 break;
@@ -241,11 +241,11 @@ export class KanbanEditorPanel {
                 if (!title) {
                     break;
                 }
-                const lane = message.lane || this._boardConfigStore.get().lanes[0]?.id || 'todo';
+                const lane = message.lane || this._boardConfigStore.get().lanes[0] || 'todo';
                 const task = this._taskStore.createTask(title, lane);
                 // Assign sortOrder: place at end of target lane
                 const laneTasks = this._taskStore.getAll()
-                    .filter((t) => t.lane === lane && !t.archived)
+                    .filter((t) => t.lane === lane)
                     .sort((a, b) => (a.sortOrder ?? Date.parse(a.created)) - (b.sortOrder ?? Date.parse(b.created)));
                 const lastOrder = laneTasks.length > 0
                     ? (laneTasks[laneTasks.length - 1].sortOrder ?? Date.parse(laneTasks[laneTasks.length - 1].created))
@@ -274,23 +274,26 @@ export class KanbanEditorPanel {
                     prompt: 'Enter lane name',
                     placeHolder: 'Lane name',
                     validateInput: (v) => {
-                        const sanitised = sanitiseLaneName(v);
-                        if (!sanitised) {
+                        const slug = slugifyLane(v);
+                        if (!slug) {
                             return 'Name cannot be empty';
                         }
-                        if (PROTECTED_LANE_NAMES.includes(sanitised)) {
-                            return `"${sanitised}" is a reserved lane name`;
+                        if (isProtectedLane(slug)) {
+                            return `"${slug}" is a reserved lane name`;
                         }
-                        if (config.lanes.some((l) => l.id === sanitised)) {
-                            return `A lane named "${sanitised}" already exists`;
+                        if (isReservedLane(slug)) {
+                            return `"${slug}" is reserved and cannot be used as a lane name`;
+                        }
+                        if (config.lanes.includes(slug)) {
+                            return `A lane named "${slug}" already exists`;
                         }
                         return null;
                     },
                 });
                 if (laneName) {
-                    const id = sanitiseLaneName(laneName);
-                    if (id) {
-                        config.lanes.push({ id, name: id });
+                    const slug = slugifyLane(laneName);
+                    if (slug) {
+                        config.lanes.push(slug);
                         await this._boardConfigStore.update({ lanes: config.lanes });
                     }
                 }
@@ -299,16 +302,16 @@ export class KanbanEditorPanel {
 
             case 'removeLane': {
                 const config = this._boardConfigStore.get();
-                const lane = config.lanes.find((l) => l.id === message.laneId);
-                if (lane && isProtectedLane(lane)) {
+                const laneSlug = message.laneId as string;
+                if (isProtectedLane(laneSlug)) {
                     vscode.window.showWarningMessage(
-                        `The ${lane.name} lane cannot be removed.`,
+                        `The ${laneSlug.toUpperCase()} lane cannot be removed.`,
                     );
                     break;
                 }
                 const laneTasks = this._taskStore
                     .getAll()
-                    .filter((t) => t.lane === message.laneId);
+                    .filter((t) => t.lane === laneSlug);
                 if (laneTasks.length > 0) {
                     const confirm = await vscode.window.showWarningMessage(
                         `Removing this lane will delete ${laneTasks.length} task${laneTasks.length === 1 ? '' : 's'}. Continue?`,
@@ -322,53 +325,66 @@ export class KanbanEditorPanel {
                         await this._taskStore.delete(task.id);
                     }
                 }
-                config.lanes = config.lanes.filter((l) => l.id !== message.laneId);
+                config.lanes = config.lanes.filter((l) => l !== laneSlug);
                 await this._boardConfigStore.update({ lanes: config.lanes });
                 break;
             }
 
             case 'renameLane': {
                 const config = this._boardConfigStore.get();
-                const lane = config.lanes.find((l) => l.id === message.laneId);
-                if (!lane) {
+                const oldSlug = message.laneId as string;
+                if (!config.lanes.includes(oldSlug)) {
                     break;
                 }
-                if (isProtectedLane(lane)) {
+                if (isProtectedLane(oldSlug)) {
                     vscode.window.showWarningMessage(
-                        `The ${lane.name} lane cannot be renamed.`,
+                        `The ${oldSlug.toUpperCase()} lane cannot be renamed.`,
                     );
                     break;
                 }
                 const newName = await vscode.window.showInputBox({
                     prompt: 'Rename lane',
-                    value: lane.name,
+                    value: oldSlug.replace(/-/g, ' '),
                     validateInput: (v) => {
-                        const sanitised = sanitiseLaneName(v);
-                        if (!sanitised) {
+                        const newSlug = slugifyLane(v);
+                        if (!newSlug) {
                             return 'Name cannot be empty';
                         }
-                        if (PROTECTED_LANE_NAMES.includes(sanitised)) {
-                            return `Cannot rename to "${sanitised}" — that name is reserved`;
+                        if (PROTECTED_LANES.includes(newSlug)) {
+                            return `Cannot rename to "${newSlug}" — that name is reserved`;
                         }
-                        if (sanitised !== lane.id && config.lanes.some((l) => l.id === sanitised)) {
-                            return `A lane named "${sanitised}" already exists`;
+                        if (isReservedLane(newSlug)) {
+                            return `"${newSlug}" is reserved and cannot be used as a lane name`;
+                        }
+                        if (newSlug !== oldSlug && config.lanes.includes(newSlug)) {
+                            return `A lane named "${newSlug}" already exists`;
                         }
                         return null;
                     },
                 });
                 if (newName) {
-                    const newId = sanitiseLaneName(newName);
-                    if (newId && newId !== lane.id) {
-                        const oldId = lane.id;
-                        lane.id = newId;
-                        lane.name = newId;
-                        await this._boardConfigStore.update({ lanes: config.lanes });
-                        // Migrate tasks from old lane to new lane
-                        const tasks = this._taskStore.getAll().filter((t) => t.lane === oldId);
-                        for (const task of tasks) {
-                            task.lane = newId;
-                            await this._taskStore.save(task);
+                    const newSlug = slugifyLane(newName);
+                    if (newSlug && newSlug !== oldSlug) {
+                        // Rename directory
+                        const workspaceUri = vscode.workspace.workspaceFolders?.[0]?.uri;
+                        if (workspaceUri) {
+                            const oldDir = vscode.Uri.joinPath(workspaceUri, '.agentkanban', 'tasks', oldSlug);
+                            const newDir = vscode.Uri.joinPath(workspaceUri, '.agentkanban', 'tasks', newSlug);
+                            try {
+                                await vscode.workspace.fs.rename(oldDir, newDir, { overwrite: false });
+                            } catch {
+                                // Directory might not exist yet — create it
+                                try { await vscode.workspace.fs.createDirectory(newDir); } catch { /* exists */ }
+                            }
                         }
+                        // Update config
+                        const idx = config.lanes.indexOf(oldSlug);
+                        if (idx !== -1) {
+                            config.lanes[idx] = newSlug;
+                        }
+                        await this._boardConfigStore.update({ lanes: config.lanes });
+                        // Reload tasks to pick up new directory
+                        await this._taskStore.reload();
                     }
                 }
                 break;
@@ -380,12 +396,8 @@ export class KanbanEditorPanel {
 
             case 'moveLane': {
                 const config = this._boardConfigStore.get();
-                const fromIndex = config.lanes.findIndex(
-                    (l) => l.id === message.sourceLaneId,
-                );
-                const toIndex = config.lanes.findIndex(
-                    (l) => l.id === message.targetLaneId,
-                );
+                const fromIndex = config.lanes.indexOf(message.sourceLaneId);
+                const toIndex = config.lanes.indexOf(message.targetLaneId);
                 if (fromIndex !== -1 && toIndex !== -1 && fromIndex !== toIndex) {
                     const [moved] = config.lanes.splice(fromIndex, 1);
                     config.lanes.splice(toIndex, 0, moved);
@@ -405,9 +417,10 @@ export class KanbanEditorPanel {
                 task.labels = message.labels as string[] | undefined;
                 task.dueDate = message.dueDate as string | undefined;
                 if (message.lane && message.lane !== task.lane) {
-                    task.lane = message.lane;
+                    await this._taskStore.moveTaskToLane(message.taskId, message.lane);
+                } else {
+                    await this._taskStore.save(task);
                 }
-                await this._taskStore.save(task);
                 break;
             }
 
@@ -433,8 +446,7 @@ export class KanbanEditorPanel {
             case 'archiveTask': {
                 const task = this._taskStore.get(message.taskId);
                 if (task) {
-                    task.archived = true;
-                    await this._taskStore.save(task);
+                    await this._taskStore.moveTaskToLane(message.taskId, 'archive');
                 }
                 break;
             }

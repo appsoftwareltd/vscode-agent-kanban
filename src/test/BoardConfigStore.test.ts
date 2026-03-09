@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { BoardConfigStore } from '../BoardConfigStore';
-import type { BoardConfig, LaneConfig } from '../types';
-import { DEFAULT_BOARD_CONFIG, isProtectedLane, PROTECTED_LANE_NAMES } from '../types';
+import type { BoardConfig } from '../types';
+import { DEFAULT_BOARD_CONFIG, isProtectedLane, PROTECTED_LANES } from '../types';
 import { Uri, workspace } from 'vscode';
 
 describe('BoardConfigStore', () => {
@@ -15,13 +15,7 @@ describe('BoardConfigStore', () => {
 
         it('should round-trip config with custom lanes and base prompt', () => {
             const config: BoardConfig = {
-                lanes: [
-                    { id: 'backlog', name: 'Backlog' },
-                    { id: 'in-progress', name: 'In Progress' },
-                    { id: 'review', name: 'Review' },
-                    { id: 'done', name: 'Done' },
-                ],
-                basePrompt: 'You are a senior engineer.\nFollow TDD principles.\nWrite clean code.',
+                lanes: ['backlog', 'in-progress', 'review', 'done'],
             };
 
             const yaml = BoardConfigStore.serialise(config);
@@ -32,78 +26,51 @@ describe('BoardConfigStore', () => {
 
         it('should produce valid YAML output', () => {
             const config: BoardConfig = {
-                lanes: [
-                    { id: 'todo', name: 'Todo' },
-                    { id: 'doing', name: 'Doing' },
-                ],
-                basePrompt: 'Be helpful',
+                lanes: ['todo', 'doing'],
             };
 
             const yaml = BoardConfigStore.serialise(config);
 
-            expect(yaml).toContain('basePrompt: Be helpful');
-            expect(yaml).toContain('id: todo');
-            expect(yaml).toContain('name: Todo');
+            expect(yaml).toContain('- todo');
+            expect(yaml).toContain('- doing');
         });
 
-        it('should handle empty base prompt', () => {
+        it('should handle config with no optional fields', () => {
             const config: BoardConfig = {
-                lanes: [{ id: 'a', name: 'A' }],
-                basePrompt: '',
+                lanes: ['a'],
             };
 
             const yaml = BoardConfigStore.serialise(config);
             const result = BoardConfigStore.deserialise(yaml);
 
-            expect(result.basePrompt).toBe('');
-        });
-
-        it('should handle multi-line base prompt', () => {
-            const config: BoardConfig = {
-                lanes: [{ id: 'a', name: 'A' }],
-                basePrompt: 'Line 1\nLine 2\nLine 3',
-            };
-
-            const yaml = BoardConfigStore.serialise(config);
-            const result = BoardConfigStore.deserialise(yaml);
-
-            expect(result.basePrompt).toBe(config.basePrompt);
+            expect(result.lanes).toEqual(['a']);
         });
     });
 
     describe('isProtectedLane', () => {
-        it('should protect Todo lane (case-insensitive)', () => {
-            expect(isProtectedLane({ id: 'todo', name: 'Todo' })).toBe(true);
-            expect(isProtectedLane({ id: 'any-id', name: 'todo' })).toBe(true);
-            expect(isProtectedLane({ id: 'any-id', name: 'TODO' })).toBe(true);
+        it('should protect todo lane', () => {
+            expect(isProtectedLane('todo')).toBe(true);
         });
 
-        it('should protect Done lane (case-insensitive)', () => {
-            expect(isProtectedLane({ id: 'done', name: 'Done' })).toBe(true);
-            expect(isProtectedLane({ id: 'any-id', name: 'done' })).toBe(true);
-            expect(isProtectedLane({ id: 'any-id', name: 'DONE' })).toBe(true);
+        it('should protect done lane', () => {
+            expect(isProtectedLane('done')).toBe(true);
         });
 
         it('should not protect other lanes', () => {
-            expect(isProtectedLane({ id: 'doing', name: 'Doing' })).toBe(false);
-            expect(isProtectedLane({ id: 'backlog', name: 'Backlog' })).toBe(false);
-            expect(isProtectedLane({ id: 'review', name: 'Review' })).toBe(false);
-        });
-
-        it('should match by name not by id', () => {
-            expect(isProtectedLane({ id: 'todo', name: 'Backlog' })).toBe(false);
-            expect(isProtectedLane({ id: 'custom', name: 'Done' })).toBe(true);
+            expect(isProtectedLane('doing')).toBe(false);
+            expect(isProtectedLane('backlog')).toBe(false);
+            expect(isProtectedLane('review')).toBe(false);
         });
     });
 
-    describe('PROTECTED_LANE_NAMES', () => {
+    describe('PROTECTED_LANES', () => {
         it('should contain todo and done', () => {
-            expect(PROTECTED_LANE_NAMES).toContain('todo');
-            expect(PROTECTED_LANE_NAMES).toContain('done');
+            expect(PROTECTED_LANES).toContain('todo');
+            expect(PROTECTED_LANES).toContain('done');
         });
 
         it('should only contain lowercase values', () => {
-            for (const name of PROTECTED_LANE_NAMES) {
+            for (const name of PROTECTED_LANES) {
                 expect(name).toBe(name.toLowerCase());
             }
         });
@@ -139,7 +106,7 @@ describe('BoardConfigStore', () => {
             // stat succeeds for .gitignore (exists)
             vi.spyOn(workspace.fs, 'stat').mockResolvedValue({ type: 1, ctime: 0, mtime: 0, size: 10 } as any);
             vi.spyOn(workspace.fs, 'readFile').mockResolvedValue(
-                new TextEncoder().encode('lanes:\n  - id: todo\n    name: Todo\n  - id: done\n    name: Done\nbasePrompt: ""\n'),
+                new TextEncoder().encode('lanes:\n  - todo\n  - done\n'),
             );
             vi.spyOn(workspace.fs, 'createDirectory').mockResolvedValue(undefined);
             const writeSpy = vi.spyOn(workspace.fs, 'writeFile').mockResolvedValue(undefined);
@@ -157,8 +124,7 @@ describe('BoardConfigStore', () => {
     describe('users and labels registry', () => {
         it('should round-trip config with users and labels', () => {
             const config: BoardConfig = {
-                lanes: [{ id: 'todo', name: 'Todo' }],
-                basePrompt: '',
+                lanes: ['todo'],
                 users: ['alice', 'bob'],
                 labels: ['backend', 'frontend'],
             };
@@ -170,13 +136,75 @@ describe('BoardConfigStore', () => {
 
         it('should handle missing users/labels gracefully', () => {
             const config: BoardConfig = {
-                lanes: [{ id: 'todo', name: 'Todo' }],
-                basePrompt: '',
+                lanes: ['todo'],
             };
             const yaml = BoardConfigStore.serialise(config);
             const result = BoardConfigStore.deserialise(yaml);
             expect(result.users).toBeUndefined();
             expect(result.labels).toBeUndefined();
+        });
+    });
+
+    describe('reconcileMetadata', () => {
+        const workspaceUri = Uri.file('/test-workspace');
+
+        beforeEach(() => {
+            vi.restoreAllMocks();
+        });
+
+        it('should add unknown assignees from tasks', async () => {
+            vi.spyOn(workspace.fs, 'stat').mockRejectedValue(new Error('not found'));
+            vi.spyOn(workspace.fs, 'readFile').mockRejectedValue(new Error('not found'));
+            vi.spyOn(workspace.fs, 'createDirectory').mockResolvedValue(undefined);
+            vi.spyOn(workspace.fs, 'writeFile').mockResolvedValue(undefined);
+
+            const store = new BoardConfigStore(workspaceUri);
+            await store.init();
+
+            await store.reconcileMetadata([
+                { assignee: 'alice' },
+                { assignee: 'bob' },
+                { assignee: 'alice' },
+            ]);
+
+            const config = store.get();
+            expect(config.users).toContain('alice');
+            expect(config.users).toContain('bob');
+        });
+
+        it('should add unknown labels from tasks', async () => {
+            vi.spyOn(workspace.fs, 'stat').mockRejectedValue(new Error('not found'));
+            vi.spyOn(workspace.fs, 'readFile').mockRejectedValue(new Error('not found'));
+            vi.spyOn(workspace.fs, 'createDirectory').mockResolvedValue(undefined);
+            vi.spyOn(workspace.fs, 'writeFile').mockResolvedValue(undefined);
+
+            const store = new BoardConfigStore(workspaceUri);
+            await store.init();
+
+            await store.reconcileMetadata([
+                { labels: ['bug', 'frontend'] },
+                { labels: ['bug', 'backend'] },
+            ]);
+
+            const config = store.get();
+            expect(config.labels).toContain('bug');
+            expect(config.labels).toContain('frontend');
+            expect(config.labels).toContain('backend');
+        });
+
+        it('should not save if nothing new is found', async () => {
+            vi.spyOn(workspace.fs, 'stat').mockRejectedValue(new Error('not found'));
+            vi.spyOn(workspace.fs, 'readFile').mockRejectedValue(new Error('not found'));
+            vi.spyOn(workspace.fs, 'createDirectory').mockResolvedValue(undefined);
+            const writeSpy = vi.spyOn(workspace.fs, 'writeFile').mockResolvedValue(undefined);
+
+            const store = new BoardConfigStore(workspaceUri);
+            await store.init();
+
+            const writeCountAfterInit = writeSpy.mock.calls.length;
+            await store.reconcileMetadata([]);
+
+            expect(writeSpy.mock.calls.length).toBe(writeCountAfterInit);
         });
     });
 });

@@ -16,9 +16,16 @@ const INSTRUCTION_REL_PATH = '.agentkanban/INSTRUCTION.md';
  * Routes /new and /task commands. Sets up task context (INSTRUCTION.md +
  * task file) and hands off to Copilot agent mode for the actual work.
  */
+/** Recognised verb names for context-refresh commands. */
+const VERBS = ['plan', 'todo', 'implement'] as const;
+type Verb = typeof VERBS[number];
+
 export class ChatParticipant {
     private readonly logger: LogService;
     private readonly extensionUri: vscode.Uri;
+
+    /** Tracks the last task selected via /task, used by verb commands. */
+    lastSelectedTaskId: string | undefined;
 
     constructor(
         private readonly taskStore: TaskStore,
@@ -46,10 +53,20 @@ export class ChatParticipant {
             case 'task':
                 await this.handleTask(prompt, response);
                 return;
+            case 'plan':
+            case 'todo':
+            case 'implement': {
+                const verbs = this.parseVerbs(command, prompt);
+                await this.handleVerb(verbs, prompt, response);
+                return;
+            }
             default: {
-                response.markdown('Available commands: `/new`, `/task`\n\n');
+                response.markdown('Available commands: `/new`, `/task`, `/plan`, `/todo`, `/implement`\n\n');
                 response.markdown('- `@kanban /new <task title>` — Create a new task\n');
                 response.markdown('- `@kanban /task <task name>` — Select a task to work on\n');
+                response.markdown('- `@kanban /plan` — Plan the selected task (refreshes context)\n');
+                response.markdown('- `@kanban /todo` — Generate TODOs for the selected task\n');
+                response.markdown('- `@kanban /implement` — Implement the selected task\n');
                 return;
             }
         }
@@ -88,6 +105,21 @@ export class ChatParticipant {
      * Suggests /task for the most recently updated active task.
      */
     getFollowups(): vscode.ChatFollowup[] {
+        // When a task is selected, offer verb commands as followups
+        if (this.lastSelectedTaskId) {
+            const task = this.taskStore.get(this.lastSelectedTaskId);
+            if (task && task.lane !== DONE_LANE) {
+                return [
+                    { prompt: '', command: 'plan', label: `Plan: ${task.title}` },
+                    { prompt: '', command: 'todo', label: `Todo: ${task.title}` },
+                    { prompt: '', command: 'implement', label: `Implement: ${task.title}` },
+                    { prompt: '#todo #implement', command: 'todo', label: `Todo + Implement: ${task.title}` },
+                ];
+            }
+            // Task gone/done — clear selection
+            this.lastSelectedTaskId = undefined;
+        }
+
         const activeTasks = this.taskStore.getAll()
             .filter(t => t.lane !== DONE_LANE)
             .sort((a, b) => (b.updated || b.created).localeCompare(a.updated || a.created));
@@ -109,10 +141,11 @@ export class ChatParticipant {
             return;
         }
 
+        this.lastSelectedTaskId = undefined;
         await this.syncInstructionFile();
 
         const config = this.boardConfigStore.get();
-        const firstLane = config.lanes[0]?.id ?? 'todo';
+        const firstLane = config.lanes[0] ?? 'todo';
         const task = this.taskStore.createTask(title, firstLane);
         await this.taskStore.save(task);
 
@@ -158,6 +191,7 @@ export class ChatParticipant {
         }
 
         this.logger.info('chatParticipant', `/task on: ${task.id} (${task.title})`);
+        this.lastSelectedTaskId = task.id;
 
         // Sync INSTRUCTION.md from bundled template
         const instrUri = await this.syncInstructionFile();
@@ -197,7 +231,96 @@ export class ChatParticipant {
         response.markdown(`Working on task: **${task.title}**\n\n`);
         response.markdown(`Task file: \`${taskRelPath}\`\n\n`);
         response.markdown('The conversation for this task happens in the task file above.\n\n');
-        response.markdown('Type `plan`, `todo`, or `implement` (or a combination) in the chat, optionally with additional context, to start working.');
+        response.markdown('Use `@kanban /plan`, `@kanban /todo`, or `@kanban /implement` to begin working (or combine with `#` tags, e.g. `@kanban /todo #implement`).');
+    }
+
+    /**
+     * Parse verb names from the primary command and any #-prefixed verbs in the prompt.
+     * E.g. command='plan', prompt='#todo #implement extra text' → ['plan', 'todo', 'implement']
+     */
+    parseVerbs(command: string, prompt: string): Verb[] {
+        const verbs = new Set<Verb>();
+        if (VERBS.includes(command as Verb)) {
+            verbs.add(command as Verb);
+        }
+        const hashPattern = /#(plan|todo|implement)\b/gi;
+        let match: RegExpExecArray | null;
+        while ((match = hashPattern.exec(prompt)) !== null) {
+            verbs.add(match[1].toLowerCase() as Verb);
+        }
+        // Return in canonical order
+        return VERBS.filter(v => verbs.has(v));
+    }
+
+    /**
+     * Strip #verb tags from the prompt to extract additional context text.
+     */
+    private stripVerbTags(prompt: string): string {
+        return prompt.replace(/#(plan|todo|implement)\b/gi, '').trim();
+    }
+
+    /**
+     * Handle a verb command (/plan, /todo, /implement).
+     * Re-injects workflow context for the last selected task.
+     */
+    private async handleVerb(
+        verbs: Verb[],
+        prompt: string,
+        response: vscode.ChatResponseStream,
+    ): Promise<void> {
+        if (!this.lastSelectedTaskId) {
+            const titles = this.getActiveTaskTitles();
+            if (titles.length === 0) {
+                response.markdown('No active tasks. Use `@kanban /new <title>` to create one.');
+            } else {
+                response.markdown('No task selected. Use `@kanban /task <task name>` first.\n\n');
+                response.markdown('Active tasks:\n\n');
+                for (const t of titles) {
+                    response.markdown(`- **${t}**\n`);
+                }
+            }
+            return;
+        }
+
+        const task = this.taskStore.get(this.lastSelectedTaskId);
+        if (!task || task.lane === DONE_LANE) {
+            this.lastSelectedTaskId = undefined;
+            response.markdown('Previously selected task is no longer active. Use `@kanban /task <task name>` to select a new one.');
+            return;
+        }
+
+        this.logger.info('chatParticipant', `/${verbs.join('+')} on: ${task.id} (${task.title})`);
+
+        // Sync INSTRUCTION.md
+        const instrUri = await this.syncInstructionFile();
+
+        const taskUri = this.taskStore.getTaskUri(task.id);
+        const taskRelPath = vscode.workspace.asRelativePath(taskUri);
+
+        // Open the task file in editor
+        try {
+            const doc = await vscode.workspace.openTextDocument(taskUri);
+            await vscode.window.showTextDocument(doc, { preview: false });
+        } catch {
+            // non-fatal — file may already be open
+        }
+
+        // Output context for Copilot
+        if (instrUri) {
+            const instrRelPath = vscode.workspace.asRelativePath(instrUri);
+            response.markdown(`Read \`${instrRelPath}\` for workflow instructions.\n\n`);
+        }
+
+        const verbLabel = verbs.join(' + ');
+        response.markdown(`**${verbLabel.toUpperCase()}** — Task: **${task.title}**\n\n`);
+        response.markdown(`Task file: \`${taskRelPath}\`\n\n`);
+
+        const additionalContext = this.stripVerbTags(prompt);
+        if (additionalContext) {
+            response.markdown(`Additional context: ${additionalContext}\n\n`);
+        }
+
+        response.markdown('Type **go** in the chat to begin.');
     }
 
     /**

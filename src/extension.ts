@@ -102,15 +102,34 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     };
     context.subscriptions.push(participant);
 
-    // File watcher for task markdown files
+    // File watcher for task markdown files — debounced to coalesce
+    // delete+create pairs that file-system moves produce.
     const mdWatcher = vscode.workspace.createFileSystemWatcher(
         new vscode.RelativePattern(workspaceFolder, '.agentkanban/tasks/**/*.md'),
     );
-    const reloadTasks = async () => { await taskStore.reload(); };
-    mdWatcher.onDidChange(reloadTasks);
-    mdWatcher.onDidCreate(reloadTasks);
-    mdWatcher.onDidDelete(reloadTasks);
+    let reloadTimer: ReturnType<typeof setTimeout> | undefined;
+    const debouncedReload = () => {
+        if (reloadTimer) { clearTimeout(reloadTimer); }
+        reloadTimer = setTimeout(async () => {
+            reloadTimer = undefined;
+            const taskDirs = await taskStore.getDirectories();
+            boardConfigStore.reconcileWithDirectories(taskDirs);
+            await taskStore.reload();
+        }, 200);
+    };
+    mdWatcher.onDidChange(debouncedReload);
+    mdWatcher.onDidCreate(debouncedReload);
+    mdWatcher.onDidDelete(debouncedReload);
     context.subscriptions.push(mdWatcher);
+
+    // Directory watcher — detects empty directory creation and directory renames
+    // under the tasks folder so new lanes appear on the board immediately.
+    const dirWatcher = vscode.workspace.createFileSystemWatcher(
+        new vscode.RelativePattern(workspaceFolder, '.agentkanban/tasks/*'),
+    );
+    dirWatcher.onDidCreate(debouncedReload);
+    dirWatcher.onDidDelete(debouncedReload);
+    context.subscriptions.push(dirWatcher);
 
     // File watcher for board config
     const yamlWatcher = vscode.workspace.createFileSystemWatcher(
@@ -122,6 +141,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     // Initialise stores
     await boardConfigStore.init();
     await taskStore.init();
+
+    // Housekeeping: reconcile assignees/labels from task frontmatter into board.yaml
+    const runHousekeeping = async () => {
+        const tasks = taskStore.getAll();
+        await boardConfigStore.reconcileMetadata(tasks);
+    };
+    await runHousekeeping();
+    const housekeepingInterval = setInterval(runHousekeeping, 10 * 60 * 1000);
+    context.subscriptions.push({ dispose: () => clearInterval(housekeepingInterval) });
 
     // Sync INSTRUCTION.md from bundled template (keeps it up-to-date on extension updates)
     await chatParticipantHandler.syncInstructionFile();

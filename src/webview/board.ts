@@ -1,4 +1,4 @@
-import type { Task, LaneConfig, BoardConfig, Priority } from '../types';
+import type { Task, BoardConfig, Priority } from '../types';
 
 declare function acquireVsCodeApi(): {
     postMessage(message: unknown): void;
@@ -15,7 +15,7 @@ interface BoardState {
 
 // ── State ────────────────────────────────────────────────────────────────────
 
-let state: BoardState = { tasks: [], config: { lanes: [], basePrompt: '' } };
+let state: BoardState = { tasks: [], config: { lanes: [] } };
 let draggedTaskId: string | null = null;
 let draggedLaneId: string | null = null;
 let isDragging = false;
@@ -63,8 +63,13 @@ function isOverdue(isoDate: string): boolean {
     return new Date(isoDate + 'T00:00:00') < today;
 }
 
-function isProtectedLane(lane: LaneConfig): boolean {
-    return ['todo', 'done'].includes(lane.name.toLowerCase());
+/** Display a lane slug in the UI: UPPERCASE, hyphens→spaces. */
+function displayLane(slug: string): string {
+    return slug.replace(/-/g, ' ').toUpperCase();
+}
+
+function isProtectedLane(slug: string): boolean {
+    return ['todo', 'done'].includes(slug);
 }
 
 const PRIORITY_LABELS: Record<string, string> = {
@@ -204,25 +209,25 @@ function buildBoardHtml(): string {
             <button id="btn-add-lane" class="btn-secondary">+ Add Lane</button>
         </div>
         <div class="board" id="board">
-            ${lanes.map((lane) => buildLaneHtml(lane, state.tasks.filter((t) => t.lane === lane.id))).join('')}
+            ${lanes.map((lane) => buildLaneHtml(lane, state.tasks.filter((t) => t.lane === lane))).join('')}
         </div>
         ${buildModalHtml()}
         ${buildConfirmDialogHtml()}
     `;
 }
 
-function buildLaneHtml(lane: LaneConfig, tasks: Task[]): string {
+function buildLaneHtml(lane: string, tasks: Task[]): string {
     const isProtected = isProtectedLane(lane);
     return `
-        <div class="lane" data-lane-id="${esc(lane.id)}">
-            <div class="lane-header" draggable="true" data-drag-lane-id="${esc(lane.id)}">
+        <div class="lane" data-lane-id="${esc(lane)}">
+            <div class="lane-header" draggable="true" data-drag-lane-id="${esc(lane)}">
                 <span class="lane-grip" title="Drag to reorder">&#x2630;</span>
                 <span class="lane-title${isProtected ? '' : ' lane-title-renameable'}"
-                      ${isProtected ? '' : `data-rename-lane-id="${esc(lane.id)}"`}>${esc(lane.name)}</span>
+                      ${isProtected ? '' : `data-rename-lane-id="${esc(lane)}"`}>${esc(displayLane(lane))}</span>
                 <span class="lane-count">${tasks.length}</span>
-                ${isProtected ? '' : `<button class="icon-btn lane-remove" data-remove-lane-id="${esc(lane.id)}" title="Remove lane">&times;</button>`}
+                ${isProtected ? '' : `<button class="icon-btn lane-remove" data-remove-lane-id="${esc(lane)}" title="Remove lane">&times;</button>`}
             </div>
-            <div class="lane-cards" data-lane-id="${esc(lane.id)}">
+            <div class="lane-cards" data-lane-id="${esc(lane)}">
                 ${tasks.map(buildCardHtml).join('')}
             </div>
         </div>
@@ -268,7 +273,7 @@ function buildCardHtml(task: Task): string {
 
 function buildModalHtml(): string {
     const laneOptions = state.config.lanes
-        .map((l) => `<option value="${esc(l.id)}">${esc(l.name)}</option>`)
+        .map((l) => `<option value="${esc(l)}">${esc(displayLane(l))}</option>`)
         .join('');
     return `
         <div class="modal-backdrop" id="modal-backdrop" hidden>
@@ -744,7 +749,7 @@ function openCreateModal(): void {
     }
     const laneEl = document.getElementById('modal-lane') as HTMLSelectElement | null;
     if (laneEl && state.config.lanes.length > 0) {
-        laneEl.value = state.config.lanes[0].id;
+        laneEl.value = state.config.lanes[0];
     }
     const priorityEl = document.getElementById('modal-priority') as HTMLSelectElement | null;
     if (priorityEl) {
