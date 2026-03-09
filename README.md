@@ -110,3 +110,7 @@ git commit -m "Release v0.2.0"
 git tag v0.2.0
 git push origin main --tags
 ```
+
+## LICENCE
+
+Elastic License 2.0 (ELv2)
