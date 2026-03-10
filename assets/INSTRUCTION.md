@@ -57,6 +57,10 @@ IMPORTANT: The conversation should happen in the task file. You may use the chat
 - After your response, you must `[user]` on a new line for the user's next entry
 - Look for and honor inline `[comment] <text>` annotations from the user
 - Ask questions and give the user options if is needed or may improve the final implementation.
+- ALWAYS start and finish conversations in the chat window with `Conversing in file: task_<YYYYMMdd>_<HHmmssfff>_<unique_id>_<slug>.md` (but do not add this text to the conversation markdown - keep it in the chat window)
+- Always re-read this INSTRUCTION.md file at the start of every action.
+- **At the start of each response, confirm which task file you are working in.** If no task file is in context, state this and ask the user to select one with `@kanban /task`.
+- If you cannot find a task file reference in the conversation, search `.agentkanban/tasks/` for files in non-done lanes and ask the user which task to work on.
 
 ## TODO File Format
 

@@ -198,11 +198,12 @@ Returns `{ task, freeText }` where `freeText` is any remaining prompt after the 
 
 1. If no prompt: lists active tasks
 2. Resolve task from prompt via `resolveTaskFromPrompt()`
-3. Ensure `.agentkanban/INSTRUCTION.md` exists (copy from bundled template if missing)
+3. Sync `.agentkanban/INSTRUCTION.md` and AGENTS.md managed section from bundled templates
 4. Set `lastSelectedTaskId` for verb followups
-5. Open the task file in the editor via `vscode.window.showTextDocument()`
-6. Output INSTRUCTION.md reference, custom instruction file reference (if configured), task title, task file path
-7. Guide user to use `@kanban /plan`, `/todo`, `/implement` verb commands to begin working
+5. Attach INSTRUCTION.md and task file as `response.reference()` URIs for persistent context
+6. Open the task file in the editor via `vscode.window.showTextDocument()`
+7. Output INSTRUCTION.md reference, custom instruction file reference (if configured), task title, task file path
+8. Guide user to use `@kanban /plan`, `/todo`, `/implement` verb commands to begin working
 
 ##### Custom Instruction File
 
@@ -219,10 +220,11 @@ When `agentKanban.customInstructionFile` is set, `handleTask()` resolves the pat
 
 1. If `lastSelectedTaskId` is not set: lists active tasks and prompts user to run `/task` first
 2. Look up task from `lastSelectedTaskId`; if task is done/missing, clear selection and prompt re-selection
-3. Sync INSTRUCTION.md from bundled template
-4. Open the task file in editor
-5. Output: INSTRUCTION.md reference, verb label + task title, task file path, additional context (if any)
-6. Instruct agent to read the task file and perform the verb action
+3. Sync INSTRUCTION.md and AGENTS.md managed section
+4. Attach INSTRUCTION.md and task file as `response.reference()` URIs for persistent context
+5. Open the task file in editor
+6. Output: INSTRUCTION.md reference, verb label + task title, task file path, additional context (if any)
+7. Instruct agent to read the task file and perform the verb action
 
 **Verb combinations**: The prompt can contain `#plan`, `#todo`, `#implement` hash tags to combine verbs. E.g. `@kanban /todo #implement` runs both todo and implement. `parseVerbs(command, prompt)` extracts all verbs in canonical order (plan → todo → implement).
 
@@ -232,11 +234,38 @@ Returns titles of all non-Done tasks. Used in the default (no command) response 
 
 ### INSTRUCTION.md — Agent Context Injection
 
-`ensureInstructionFile()` checks for `.agentkanban/INSTRUCTION.md` in the workspace. If missing, copies the bundled template from `assets/INSTRUCTION.md` (shipped with the extension). Called at the start of every action command.
+`syncInstructionFile()` syncs `.agentkanban/INSTRUCTION.md` in the workspace from the bundled template (`assets/INSTRUCTION.md`). Always overwrites — this file is managed by the extension, not user-editable. Called at the start of every action command.
 
-The instruction file reference is injected into the chat response as: `Read .agentkanban/INSTRUCTION.md first for workflow instructions.`
+The instruction file reference is injected into the chat response as: `Read .agentkanban/INSTRUCTION.md for workflow instructions.`
 
-The file is editable by the user. Deleting it causes it to be re-created from the template on next command use.
+### AGENTS.md — Managed Section
+
+`syncAgentsMdSection()` manages a sentinel-delimited section in the workspace's `AGENTS.md`. VS Code re-injects `AGENTS.md` into the system prompt on **every agent mode turn**, making it the most reliable context injection mechanism.
+
+The section is delimited by `<!-- BEGIN AGENT KANBAN — DO NOT EDIT THIS SECTION -->` and `<!-- END AGENT KANBAN -->` sentinel comments. The method:
+
+1. Reads existing `AGENTS.md` (or starts with empty string if the file doesn't exist)
+2. Finds the sentinel block (if present) and replaces it, or appends the block at the end
+3. Writes the file back — user content outside the sentinels is never modified
+
+Section content:
+```markdown
+<!-- BEGIN AGENT KANBAN — DO NOT EDIT THIS SECTION -->
+## Agent Kanban
+
+Read `.agentkanban/INSTRUCTION.md` for task workflow rules.
+Read `.agentkanban/memory.md` for project context.
+
+If a task file (`.agentkanban/tasks/**/*.md`) was referenced earlier in this conversation, re-read it before responding.
+<!-- END AGENT KANBAN -->
+```
+
+Called on activation and by every `/task` and verb command. This ensures:
+- The agent always knows INSTRUCTION.md and memory.md exist (every turn, all threads)
+- The section is task-agnostic — safe for multiple concurrent chat threads
+- The "re-read task file" directive prompts the agent to actively recover its task context
+
+The layered approach combines AGENTS.md (system-prompt level, every turn), `response.reference()` (per-thread URIs), verb commands (on-demand refresh), and editor tabs (persistent while open) to eliminate context decay.
 
 ### Followup Provider
 

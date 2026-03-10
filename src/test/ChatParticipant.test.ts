@@ -12,9 +12,12 @@ function mockRequest(command: string | undefined, prompt: string) {
 
 function mockResponse() {
     const messages: string[] = [];
+    const references: any[] = [];
     return {
         markdown: (text: string) => { messages.push(text); },
+        reference: (uri: any) => { references.push(uri); },
         messages,
+        references,
     } as any;
 }
 
@@ -412,6 +415,144 @@ describe('ChatParticipant', () => {
         });
     });
 
+    describe('syncAgentsMdSection', () => {
+        it('should create AGENTS.md with sentinel section when file does not exist', async () => {
+            // readFile throws → file doesn't exist
+            vi.spyOn(workspace.fs, 'readFile').mockRejectedValueOnce(new Error('File not found'));
+            const writeSpy = vi.spyOn(workspace.fs, 'writeFile').mockResolvedValue(undefined);
+
+            await participant.syncAgentsMdSection();
+
+            expect(writeSpy).toHaveBeenCalled();
+            const written = new TextDecoder().decode(writeSpy.mock.calls[0][1] as Uint8Array);
+            expect(written).toContain('<!-- BEGIN AGENT KANBAN');
+            expect(written).toContain('<!-- END AGENT KANBAN -->');
+            expect(written).toContain('INSTRUCTION.md');
+            expect(written).toContain('memory.md');
+            expect(written).toContain('re-read it before responding');
+        });
+
+        it('should append sentinel section to existing AGENTS.md preserving user content', async () => {
+            const existingContent = '# My AGENTS\n\nSome user instructions.\n';
+            vi.spyOn(workspace.fs, 'readFile').mockResolvedValueOnce(
+                new TextEncoder().encode(existingContent),
+            );
+            const writeSpy = vi.spyOn(workspace.fs, 'writeFile').mockResolvedValue(undefined);
+
+            await participant.syncAgentsMdSection();
+
+            expect(writeSpy).toHaveBeenCalled();
+            const written = new TextDecoder().decode(writeSpy.mock.calls[0][1] as Uint8Array);
+            expect(written).toContain('# My AGENTS');
+            expect(written).toContain('Some user instructions.');
+            expect(written).toContain('<!-- BEGIN AGENT KANBAN');
+            expect(written).toContain('<!-- END AGENT KANBAN -->');
+        });
+
+        it('should replace existing sentinel section with updated content', async () => {
+            const existingContent = [
+                '# My AGENTS',
+                '',
+                '<!-- BEGIN AGENT KANBAN — DO NOT EDIT THIS SECTION -->',
+                '## Old Content',
+                '<!-- END AGENT KANBAN -->',
+                '',
+                'User content below.',
+            ].join('\n');
+            vi.spyOn(workspace.fs, 'readFile').mockResolvedValueOnce(
+                new TextEncoder().encode(existingContent),
+            );
+            const writeSpy = vi.spyOn(workspace.fs, 'writeFile').mockResolvedValue(undefined);
+
+            await participant.syncAgentsMdSection();
+
+            const written = new TextDecoder().decode(writeSpy.mock.calls[0][1] as Uint8Array);
+            expect(written).toContain('# My AGENTS');
+            expect(written).toContain('User content below.');
+            expect(written).toContain('INSTRUCTION.md');
+            expect(written).not.toContain('## Old Content');
+        });
+
+        it('should return undefined when no workspace folder', async () => {
+            const orig = workspace.workspaceFolders;
+            (workspace as any).workspaceFolders = undefined;
+
+            const result = await participant.syncAgentsMdSection();
+
+            expect(result).toBeUndefined();
+            (workspace as any).workspaceFolders = orig;
+        });
+
+        it('should return undefined on write failure', async () => {
+            vi.spyOn(workspace.fs, 'readFile').mockRejectedValueOnce(new Error('not found'));
+            vi.spyOn(workspace.fs, 'writeFile').mockRejectedValueOnce(new Error('write failed'));
+
+            const result = await participant.syncAgentsMdSection();
+
+            expect(result).toBeUndefined();
+        });
+    });
+
+    describe('response.reference() calls', () => {
+        let task: Task;
+
+        beforeEach(() => {
+            task = {
+                id: 'task_ref_1',
+                title: 'Ref Task',
+                lane: 'doing',
+                created: '2026-03-08T10:00:00.000Z',
+                updated: '2026-03-08T10:00:00.000Z',
+                description: '',
+            };
+            (taskStore as any).tasks.set(task.id, task);
+
+            vi.spyOn(workspace.fs, 'readFile').mockResolvedValue(
+                new TextEncoder().encode('# Template'),
+            );
+            vi.spyOn(workspace.fs, 'writeFile').mockResolvedValue(undefined);
+            vi.spyOn(workspace, 'openTextDocument').mockResolvedValue({} as any);
+            vi.spyOn(window, 'showTextDocument').mockResolvedValue(undefined as any);
+        });
+
+        it('should attach INSTRUCTION.md and task file references on /task', async () => {
+            const response = mockResponse();
+            await participant.handleRequest(mockRequest('task', 'Ref Task'), {} as any, response, mockToken);
+
+            expect(response.references.length).toBe(2);
+            // First reference is INSTRUCTION.md
+            const instrRef = response.references[0];
+            expect(instrRef.fsPath || instrRef.path).toContain('INSTRUCTION.md');
+            // Second reference is the task file
+            const taskRef = response.references[1];
+            expect(taskRef.fsPath || taskRef.path).toContain('task_ref_1');
+        });
+
+        it('should attach INSTRUCTION.md and task file references on verb commands', async () => {
+            participant.lastSelectedTaskId = task.id;
+            const response = mockResponse();
+            await participant.handleRequest(mockRequest('plan', ''), {} as any, response, mockToken);
+
+            expect(response.references.length).toBe(2);
+            const instrRef = response.references[0];
+            expect(instrRef.fsPath || instrRef.path).toContain('INSTRUCTION.md');
+            const taskRef = response.references[1];
+            expect(taskRef.fsPath || taskRef.path).toContain('task_ref_1');
+        });
+
+        it('should still attach task reference even if syncInstructionFile fails', async () => {
+            vi.spyOn(workspace.fs, 'readFile').mockRejectedValue(new Error('sync failed'));
+
+            const response = mockResponse();
+            await participant.handleRequest(mockRequest('task', 'Ref Task'), {} as any, response, mockToken);
+
+            // Only the task file reference (INSTRUCTION.md sync failed)
+            expect(response.references.length).toBe(1);
+            const taskRef = response.references[0];
+            expect(taskRef.fsPath || taskRef.path).toContain('task_ref_1');
+        });
+    });
+
     describe('getFollowups', () => {
         it('should return /task followup for most recent active task when no task selected', () => {
             const tasks: Task[] = [
@@ -593,7 +734,7 @@ describe('ChatParticipant', () => {
             expect(participant.lastSelectedTaskId).toBeUndefined();
         });
 
-        it('should open the task file in editor', async () => {
+        it('should open task file in editor with preserveFocus', async () => {
             participant.lastSelectedTaskId = task.id;
             const openSpy = vi.spyOn(workspace, 'openTextDocument');
             const showSpy = vi.spyOn(window, 'showTextDocument');
@@ -602,7 +743,7 @@ describe('ChatParticipant', () => {
             await participant.handleRequest(mockRequest('implement', ''), {} as any, response, mockToken);
 
             expect(openSpy).toHaveBeenCalled();
-            expect(showSpy).toHaveBeenCalledWith(expect.anything(), { preview: false });
+            expect(showSpy).toHaveBeenCalledWith(expect.anything(), { preview: false, preserveFocus: true });
         });
 
         it('should end with "Type go" prompt', async () => {

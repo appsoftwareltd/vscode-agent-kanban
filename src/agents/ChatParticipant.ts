@@ -10,6 +10,23 @@ const DONE_LANE = 'done';
 /** Relative path within the workspace for the instruction file. */
 const INSTRUCTION_REL_PATH = '.agentkanban/INSTRUCTION.md';
 
+/** Relative path within the workspace for AGENTS.md (managed section). */
+const AGENTS_MD_REL_PATH = 'AGENTS.md';
+
+const AGENTS_MD_BEGIN = '<!-- BEGIN AGENT KANBAN \u2014 DO NOT EDIT THIS SECTION -->';
+const AGENTS_MD_END = '<!-- END AGENT KANBAN -->';
+
+const AGENTS_MD_SECTION = [
+    AGENTS_MD_BEGIN,
+    '## Agent Kanban',
+    '',
+    'Read `.agentkanban/INSTRUCTION.md` for task workflow rules.',
+    'Read `.agentkanban/memory.md` for project context.',
+    '',
+    'If a task file (`.agentkanban/tasks/**/*.md`) was referenced earlier in this conversation, re-read it before responding.',
+    AGENTS_MD_END,
+].join('\n');
+
 /**
  * Lightweight @kanban chat participant.
  *
@@ -96,6 +113,49 @@ export class ChatParticipant {
             return instrUri;
         } catch (err: any) {
             this.logger.warn('chatParticipant', `Failed to sync INSTRUCTION.md: ${err.message}`);
+            return undefined;
+        }
+    }
+
+    /**
+     * Manage a sentinel-delimited section in the workspace's AGENTS.md.
+     * Preserves any user content outside the sentinels. Creates the file if
+     * it does not exist.
+     */
+    async syncAgentsMdSection(): Promise<vscode.Uri | undefined> {
+        const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+        if (!workspaceFolder) { return undefined; }
+
+        const agentsUri = vscode.Uri.joinPath(workspaceFolder.uri, AGENTS_MD_REL_PATH);
+        try {
+            let existing = '';
+            try {
+                const bytes = await vscode.workspace.fs.readFile(agentsUri);
+                existing = new TextDecoder().decode(bytes);
+            } catch {
+                // File doesn't exist — start fresh
+            }
+
+            const beginIdx = existing.indexOf(AGENTS_MD_BEGIN);
+            const endIdx = existing.indexOf(AGENTS_MD_END);
+
+            let updated: string;
+            if (beginIdx !== -1 && endIdx !== -1) {
+                // Replace existing section
+                const before = existing.slice(0, beginIdx);
+                const after = existing.slice(endIdx + AGENTS_MD_END.length);
+                updated = before + AGENTS_MD_SECTION + after;
+            } else {
+                // Append section
+                const sep = existing.length > 0 && !existing.endsWith('\n') ? '\n\n' : existing.length > 0 ? '\n' : '';
+                updated = existing + sep + AGENTS_MD_SECTION + '\n';
+            }
+
+            await vscode.workspace.fs.writeFile(agentsUri, new TextEncoder().encode(updated));
+            this.logger.info('chatParticipant', 'Synced AGENTS.md managed section');
+            return agentsUri;
+        } catch (err: any) {
+            this.logger.warn('chatParticipant', `Failed to sync AGENTS.md section: ${err.message}`);
             return undefined;
         }
     }
@@ -193,11 +253,16 @@ export class ChatParticipant {
         this.logger.info('chatParticipant', `/task on: ${task.id} (${task.title})`);
         this.lastSelectedTaskId = task.id;
 
-        // Sync INSTRUCTION.md from bundled template
+        // Sync INSTRUCTION.md and AGENTS.md section from bundled templates
         const instrUri = await this.syncInstructionFile();
+        await this.syncAgentsMdSection();
 
         const taskUri = this.taskStore.getTaskUri(task.id);
         const taskRelPath = vscode.workspace.asRelativePath(taskUri);
+
+        // Attach files as references so they persist in conversation context
+        if (instrUri) { response.reference(instrUri); }
+        response.reference(taskUri);
 
         // Open the task file in editor
         try {
@@ -291,16 +356,21 @@ export class ChatParticipant {
 
         this.logger.info('chatParticipant', `/${verbs.join('+')} on: ${task.id} (${task.title})`);
 
-        // Sync INSTRUCTION.md
+        // Sync INSTRUCTION.md and AGENTS.md section from bundled templates
         const instrUri = await this.syncInstructionFile();
+        await this.syncAgentsMdSection();
 
         const taskUri = this.taskStore.getTaskUri(task.id);
         const taskRelPath = vscode.workspace.asRelativePath(taskUri);
 
-        // Open the task file in editor
+        // Attach files as references so they persist in conversation context
+        if (instrUri) { response.reference(instrUri); }
+        response.reference(taskUri);
+
+        // Open the task file in editor (preserveFocus keeps cursor in chat input)
         try {
             const doc = await vscode.workspace.openTextDocument(taskUri);
-            await vscode.window.showTextDocument(doc, { preview: false });
+            await vscode.window.showTextDocument(doc, { preview: false, preserveFocus: true });
         } catch {
             // non-fatal — file may already be open
         }

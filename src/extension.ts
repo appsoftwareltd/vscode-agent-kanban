@@ -151,8 +151,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const housekeepingInterval = setInterval(runHousekeeping, 10 * 60 * 1000);
     context.subscriptions.push({ dispose: () => clearInterval(housekeepingInterval) });
 
-    // Sync INSTRUCTION.md from bundled template (keeps it up-to-date on extension updates)
+    // Sync INSTRUCTION.md and AGENTS.md managed section (keeps them up-to-date on extension updates)
     await chatParticipantHandler.syncInstructionFile();
+    await chatParticipantHandler.syncAgentsMdSection();
 
     if (logger.isEnabled) {
         logger.info('extension', 'Extension activated');

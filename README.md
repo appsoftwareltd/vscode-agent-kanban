@@ -53,7 +53,23 @@ Verb commands (`/plan`, `/todo`, `/implement`) operate on the last task selected
 
 ## Agent Instructions
 
-`.agentkanban/INSTRUCTION.md` is managed automatically — synced from the bundled template on every activation and command. **Do not edit it directly**; changes are overwritten on update. To customise agent behaviour, use your own agent configuration files (`AGENTS.md`, `CLAUDE.md`, skills, etc.). Agent Kanban co-exists with these without interference.
+Agent Kanban uses a layered approach to keep the agent on track, even in long conversations:
+
+1. **AGENTS.md managed section** — On activation and every command, Agent Kanban writes a small sentinel-delimited section into `AGENTS.md` at the workspace root. VS Code re-injects AGENTS.md into the system prompt on **every agent mode turn**, so the agent always knows to read `INSTRUCTION.md` and `memory.md`. User content outside the sentinel markers (`<!-- BEGIN/END AGENT KANBAN -->`) is never modified.
+
+2. **`response.reference()`** — Each `/task` and verb command attaches the INSTRUCTION.md and task file URIs to the chat response. This gives the agent a direct, per-thread reference to the active files.
+
+3. **Verb commands** (`@kanban /plan`, `/todo`, `/implement`) — On-demand context refresh checkpoints. Each one re-syncs INSTRUCTION.md, updates the AGENTS.md section, and re-references the task file. Use these when the agent drifts in a long conversation.
+
+4. **Editor tab** — `/task` and verb commands open the task file in the editor. While the tab is open, the agent can see it as context.
+
+`.agentkanban/INSTRUCTION.md` is managed automatically — synced from the bundled template on every activation and command. **Do not edit it directly**; changes are overwritten on update. To customise agent behaviour, use your own agent configuration files (`AGENTS.md` outside the sentinels, `CLAUDE.md`, skills, etc.).
+
+> **Note:** If your workspace already has an `AGENTS.md`, Agent Kanban only modifies content between its sentinel comments. Your own instructions are preserved.
+
+### Why a layered approach?
+
+In long Copilot chat conversations, earlier messages gradually scroll out of the model's context window. A single one-shot instruction injection (e.g. "read INSTRUCTION.md") works initially but the agent eventually forgets the workflow rules (context decay). We explored several mechanisms in isolation — `response.reference()`, `.instructions.md` with `applyTo` globs, MCP tool calls — and found that none completely solved the problem alone. Of these, `AGENTS.md` is the strongest because VS Code re-injects it at the system-prompt level on every agent turn — it never decays. The other layers (per-thread references, verb commands, open editor tabs) provide complementary safety nets, giving the agent multiple independent paths back to the workflow rules and the active task file.
 
 ## Task File Format
 
@@ -130,8 +146,8 @@ npx @vscode/vsce publish
 
 # 3. Tag and push
 git add .
-git commit -m "Release v0.2.1"
-git tag v0.2.1
+git commit -m "Release v1.0.0"
+git tag v1.0.0
 git push origin main --tags
 ```
 

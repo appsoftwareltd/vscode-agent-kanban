@@ -2,7 +2,7 @@
     "name": "vscode-agent-kanban",
     "displayName": "VS Code Agent Kanban",
     "description": "An integrated Kanban board for managing coding agent tasks with persistent, version-controllable markdown conversations.",
-    "version": "0.2.1",
+    "version": "1.0.0",
     "publisher": "appsoftwareltd",
     "license": "Elastic-2.0",
     "icon": "images/icon.png",
@@ -84,11 +84,11 @@
                 "commands": [
                     {
                         "name": "new",
-                        "description": "Create a new task: @kanban /new <task title>"
+                        "description": "<task title>"
                     },
                     {
                         "name": "task",
-                        "description": "Select a task to work on: @kanban /task <task name>"
+                        "description": "<task name>"
                     },
                     {
                         "name": "plan",
