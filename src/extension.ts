@@ -13,10 +13,26 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         return;
     }
 
+    // Detect initialisation state FIRST — before creating LogService — so that
+    // the log directory (inside .agentkanban/) is never created on a fresh workspace.
+    // Presence of .agentkanban/board.yaml is the initialisation signal.
+    const boardYamlUri = vscode.Uri.joinPath(workspaceFolder.uri, '.agentkanban', 'board.yaml');
+    let isInitialised = false;
+    try {
+        await vscode.workspace.fs.stat(boardYamlUri);
+        isInitialised = true;
+    } catch {
+        // File absent — workspace not yet initialised
+    }
+
     // Create LogService — enabled by setting or env var, requires reload to change.
+    // Only enabled when the workspace is already initialised; this prevents the
+    // LogService constructor from creating .agentkanban/logs/ on a fresh workspace.
     const config = vscode.workspace.getConfiguration('agentKanban');
-    const loggingEnabled = config.get<boolean>('enableLogging', false)
-        || process.env.AGENT_KANBAN_DEBUG === '1';
+    const loggingEnabled = isInitialised && (
+        config.get<boolean>('enableLogging', false)
+        || process.env.AGENT_KANBAN_DEBUG === '1'
+    );
     const logDir = path.join(workspaceFolder.uri.fsPath, '.agentkanban', 'logs');
     const logger = loggingEnabled ? new LogService(logDir, { enabled: true }) : NO_OP_LOGGER;
     if (logger.isEnabled) {
@@ -25,12 +41,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
     const taskStore = new TaskStore(workspaceFolder.uri, logger);
     const boardConfigStore = new BoardConfigStore(workspaceFolder.uri, logger);
-    const chatParticipantHandler = new ChatParticipant(taskStore, boardConfigStore, context.extensionUri, logger);
+
+    const chatParticipantHandler = new ChatParticipant(
+        taskStore,
+        boardConfigStore,
+        context.extensionUri,
+        () => isInitialised,
+        logger,
+    );
 
     const boardViewProvider = new BoardViewProvider(
         context.extensionUri,
         taskStore,
         boardConfigStore,
+        isInitialised,
         logger,
     );
 
@@ -45,20 +69,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     context.subscriptions.push(
         vscode.window.registerWebviewPanelSerializer(KanbanEditorPanel.VIEW_TYPE, {
             async deserializeWebviewPanel(panel: vscode.WebviewPanel) {
-                KanbanEditorPanel.revive(panel, context.extensionUri, taskStore, boardConfigStore, logger);
+                KanbanEditorPanel.revive(panel, context.extensionUri, taskStore, boardConfigStore, logger, isInitialised);
             },
         }),
     );
 
     context.subscriptions.push(
         vscode.commands.registerCommand('agentKanban.openBoard', () => {
-            KanbanEditorPanel.createOrShow(context.extensionUri, taskStore, boardConfigStore, logger);
+            KanbanEditorPanel.createOrShow(context.extensionUri, taskStore, boardConfigStore, logger, isInitialised);
         }),
     );
 
     context.subscriptions.push(
         vscode.commands.registerCommand('agentKanban.newTask', () => {
-            KanbanEditorPanel.createOrShow(context.extensionUri, taskStore, boardConfigStore, logger);
+            KanbanEditorPanel.createOrShow(context.extensionUri, taskStore, boardConfigStore, logger, isInitialised);
             KanbanEditorPanel.currentPanel?.triggerCreateModal();
         }),
     );
@@ -84,6 +108,32 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             } catch (err: any) {
                 vscode.window.showErrorMessage(`Failed to reset memory: ${err.message}`);
             }
+        }),
+    );
+
+    // Housekeeping: reconcile assignees/labels from task frontmatter into board.yaml
+    const runHousekeeping = async () => {
+        const tasks = taskStore.getAll();
+        await boardConfigStore.reconcileMetadata(tasks);
+    };
+
+    // Full first-time setup — creates dirs, writes config & instruction files.
+    const doInitialise = async () => {
+        await boardConfigStore.initialise();
+        await taskStore.initialise();
+        await chatParticipantHandler.syncInstructionFile();
+        await chatParticipantHandler.syncAgentsMdSection();
+        isInitialised = true;
+        boardViewProvider.setInitialised(true);
+        KanbanEditorPanel.currentPanel?.setInitialised(true);
+        await runHousekeeping();
+        logger.info('extension', 'Workspace initialised');
+    };
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('agentKanban.initialise', async () => {
+            await doInitialise();
+            vscode.window.showInformationMessage('Agent Kanban initialised successfully.');
         }),
     );
 
@@ -131,32 +181,26 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     dirWatcher.onDidDelete(debouncedReload);
     context.subscriptions.push(dirWatcher);
 
-    // File watcher for board config
+    // File watcher for board config — reloads config when user edits board.yaml
     const yamlWatcher = vscode.workspace.createFileSystemWatcher(
         new vscode.RelativePattern(workspaceFolder, '.agentkanban/board.yaml'),
     );
     yamlWatcher.onDidChange(async () => { await boardConfigStore.init(); });
     context.subscriptions.push(yamlWatcher);
 
-    // Initialise stores
-    await boardConfigStore.init();
-    await taskStore.init();
-
-    // Housekeeping: reconcile assignees/labels from task frontmatter into board.yaml
-    const runHousekeeping = async () => {
-        const tasks = taskStore.getAll();
-        await boardConfigStore.reconcileMetadata(tasks);
-    };
-    await runHousekeeping();
-    const housekeepingInterval = setInterval(runHousekeeping, 10 * 60 * 1000);
-    context.subscriptions.push({ dispose: () => clearInterval(housekeepingInterval) });
-
-    // Sync INSTRUCTION.md and AGENTS.md managed section (keeps them up-to-date on extension updates)
-    await chatParticipantHandler.syncInstructionFile();
-    await chatParticipantHandler.syncAgentsMdSection();
+    if (isInitialised) {
+        // Workspace already set up — read existing config and tasks, sync managed files
+        await boardConfigStore.init();
+        await taskStore.init();
+        await chatParticipantHandler.syncInstructionFile();
+        await chatParticipantHandler.syncAgentsMdSection();
+        await runHousekeeping();
+        const housekeepingInterval = setInterval(runHousekeeping, 10 * 60 * 1000);
+        context.subscriptions.push({ dispose: () => clearInterval(housekeepingInterval) });
+    }
 
     if (logger.isEnabled) {
-        logger.info('extension', 'Extension activated');
+        logger.info('extension', `Extension activated (initialised: ${isInitialised})`);
     }
 }
 

@@ -24,7 +24,45 @@ export class BoardConfigStore {
         this.logger = logger ?? NO_OP_LOGGER;
     }
 
+    /**
+     * Read-only init: loads config from an existing board.yaml.
+     * Does NOT create directories or write any files.
+     * Safe to call on uninitialised workspaces — stays with defaults if config absent.
+     * Migration of old object-format lanes is still performed (writes only when
+     * the file already exists, i.e. the workspace was previously set up).
+     */
     async init(): Promise<void> {
+        try {
+            const content = await vscode.workspace.fs.readFile(this.configUri);
+            const text = new TextDecoder().decode(content);
+            const loaded = parse(text) as any;
+            if (loaded?.lanes) {
+                // Migrate from old { id, name } format to flat slug list
+                if (loaded.lanes.length > 0 && typeof loaded.lanes[0] === 'object') {
+                    this.config = {
+                        ...loaded,
+                        lanes: (loaded.lanes as Array<{ id: string }>).map(l => l.id),
+                    };
+                    this.logger.info('boardConfig', 'Migrated lanes from object format to flat slugs');
+                    await this.save(); // Updating existing data — acceptable write
+                } else {
+                    this.config = loaded as BoardConfig;
+                }
+                this.logger.info('boardConfig', `Loaded config with ${this.config.lanes.length} lanes`);
+            }
+        } catch {
+            // Config file doesn't exist — stay with defaults, no writes
+            this.logger.info('boardConfig', 'No config found, using defaults (not writing)');
+        }
+        this._onDidChange.fire();
+    }
+
+    /**
+     * Full first-time setup: creates the .agentkanban directory, .gitignore,
+     * board.yaml (if absent), and lane subdirectories.
+     * Safe to call on already-initialised workspaces (idempotent).
+     */
+    async initialise(): Promise<void> {
         try {
             await vscode.workspace.fs.createDirectory(
                 vscode.Uri.joinPath(this.workspaceUri, '.agentkanban'),

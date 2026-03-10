@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { TaskStore } from '../TaskStore';
 import type { Task } from '../types';
-import { workspace } from 'vscode';
+import { Uri, workspace } from 'vscode';
 
 describe('TaskStore', () => {
     describe('slugify', () => {
@@ -386,6 +386,55 @@ describe('TaskStore', () => {
             const task = store.createTask('Test', 'todo');
 
             expect((task as any).conversation).toBeUndefined();
+        });
+    });
+
+    describe('read-only init', () => {
+        const workspaceUri = Uri.file('/test-workspace');
+
+        beforeEach(() => {
+            vi.restoreAllMocks();
+        });
+
+        it('should not create tasks directory when it does not exist', async () => {
+            vi.spyOn(workspace.fs, 'readDirectory').mockRejectedValue(new Error('not found'));
+            const dirSpy = vi.spyOn(workspace.fs, 'createDirectory').mockResolvedValue(undefined);
+
+            const store = new TaskStore(workspaceUri);
+            await store.init();
+
+            expect(dirSpy).not.toHaveBeenCalled();
+        });
+
+        it('should load tasks when directory exists without creating dirs', async () => {
+            vi.spyOn(workspace.fs, 'readDirectory').mockResolvedValue([]);
+            const dirSpy = vi.spyOn(workspace.fs, 'createDirectory').mockResolvedValue(undefined);
+
+            const store = new TaskStore(workspaceUri);
+            await store.init();
+
+            expect(dirSpy).not.toHaveBeenCalled();
+            expect(store.getAll()).toEqual([]);
+        });
+    });
+
+    describe('initialise', () => {
+        const workspaceUri = Uri.file('/test-workspace');
+
+        beforeEach(() => {
+            vi.restoreAllMocks();
+        });
+
+        it('should create tasks directory', async () => {
+            vi.spyOn(workspace.fs, 'readDirectory').mockRejectedValue(new Error('not found'));
+            const dirSpy = vi.spyOn(workspace.fs, 'createDirectory').mockResolvedValue(undefined);
+
+            const store = new TaskStore(workspaceUri);
+            await store.initialise();
+
+            expect(dirSpy).toHaveBeenCalledWith(
+                expect.objectContaining({ fsPath: expect.stringContaining('tasks') }),
+            );
         });
     });
 

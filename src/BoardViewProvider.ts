@@ -17,11 +17,17 @@ export class BoardViewProvider implements vscode.WebviewViewProvider {
         private readonly _extensionUri: vscode.Uri,
         private readonly _taskStore: TaskStore,
         private readonly _boardConfigStore: BoardConfigStore,
+        private _isInitialised: boolean,
         logger?: LogService,
     ) {
         this._logger = logger ?? NO_OP_LOGGER;
         this._taskStore.onDidChange(() => this.refresh());
         this._boardConfigStore.onDidChange(() => this.refresh());
+    }
+
+    setInitialised(flag: boolean): void {
+        this._isInitialised = flag;
+        this.refresh();
     }
 
     resolveWebviewView(
@@ -39,6 +45,8 @@ export class BoardViewProvider implements vscode.WebviewViewProvider {
                 await vscode.commands.executeCommand('agentKanban.openBoard');
             } else if (message.type === 'newTask') {
                 await vscode.commands.executeCommand('agentKanban.newTask');
+            } else if (message.type === 'initialise') {
+                await vscode.commands.executeCommand('agentKanban.initialise');
             }
         });
 
@@ -50,9 +58,61 @@ export class BoardViewProvider implements vscode.WebviewViewProvider {
         if (!this.view) {
             return;
         }
+        if (!this._isInitialised) {
+            this.view.webview.html = this._getUninitHtml();
+            return;
+        }
         const tasks = this._taskStore.getAll();
         const config = this._boardConfigStore.get();
         this.view.webview.html = this._getHtml(tasks, config);
+    }
+
+    private _getUninitHtml(): string {
+        const nonce = getNonce();
+        return `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'nonce-${nonce}'; script-src 'nonce-${nonce}';">
+    <style nonce="${nonce}">
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: var(--vscode-font-family);
+            font-size: var(--vscode-font-size);
+            color: var(--vscode-foreground);
+            padding: 16px 12px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+        .title {
+            font-weight: 600;
+            font-size: 13px;
+        }
+        .desc {
+            font-size: 12px;
+            color: var(--vscode-descriptionForeground);
+            line-height: 1.5;
+        }
+        .btn {
+            background: var(--vscode-button-background);
+            color: var(--vscode-button-foreground);
+            border: none; padding: 6px 12px; border-radius: 3px;
+            cursor: pointer; font-size: 12px; width: 100%;
+        }
+        .btn:hover { background: var(--vscode-button-hoverBackground); }
+    </style>
+</head>
+<body>
+    <div class="title">Agent Kanban</div>
+    <div class="desc">This workspace has not yet been initialised. Click below to set up the Kanban board and agent instruction files.</div>
+    <button class="btn" id="btn-init">Initialise Agent Kanban</button>
+    <script nonce="${nonce}">
+        const vscode = acquireVsCodeApi();
+        document.getElementById('btn-init').addEventListener('click', () => vscode.postMessage({ type: 'initialise' }));
+    </script>
+</body>
+</html>`;
     }
 
     private _getHtml(tasks: any[], config: any): string {

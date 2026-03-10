@@ -23,6 +23,46 @@
 
 @layer components {
 
+    /* ── Uninitialised panel ─────────────────────── */
+    .uninit-panel {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 12px;
+        height: 100vh;
+        padding: 32px;
+        text-align: center;
+    }
+
+    .uninit-title {
+        font-size: 18px;
+        font-weight: 600;
+        color: var(--vscode-foreground);
+    }
+
+    .uninit-desc {
+        font-size: 13px;
+        color: var(--vscode-descriptionForeground);
+        max-width: 360px;
+        line-height: 1.6;
+    }
+
+    .uninit-btn {
+        background: var(--vscode-button-background);
+        color: var(--vscode-button-foreground);
+        border: none;
+        padding: 8px 20px;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 13px;
+        margin-top: 4px;
+    }
+
+    .uninit-btn:hover {
+        background: var(--vscode-button-hoverBackground);
+    }
+
     /* ── Layout ──────────────────────────────────── */
     #app {
         display: flex;

@@ -76,7 +76,7 @@ describe('BoardConfigStore', () => {
         });
     });
 
-    describe('ensureGitignore (via init)', () => {
+    describe('ensureGitignore (via initialise)', () => {
         const workspaceUri = Uri.file('/test-workspace');
 
         beforeEach(() => {
@@ -91,7 +91,7 @@ describe('BoardConfigStore', () => {
             const writeSpy = vi.spyOn(workspace.fs, 'writeFile').mockResolvedValue(undefined);
 
             const store = new BoardConfigStore(workspaceUri);
-            await store.init();
+            await store.initialise();
 
             // Find the writeFile call for .gitignore
             const gitignoreCall = writeSpy.mock.calls.find(
@@ -112,12 +112,97 @@ describe('BoardConfigStore', () => {
             const writeSpy = vi.spyOn(workspace.fs, 'writeFile').mockResolvedValue(undefined);
 
             const store = new BoardConfigStore(workspaceUri);
-            await store.init();
+            await store.initialise();
 
             const gitignoreCall = writeSpy.mock.calls.find(
                 ([uri]) => (uri as any).fsPath.endsWith('.gitignore'),
             );
             expect(gitignoreCall).toBeUndefined();
+        });
+    });
+
+    describe('read-only init', () => {
+        const workspaceUri = Uri.file('/test-workspace');
+
+        beforeEach(() => {
+            vi.restoreAllMocks();
+        });
+
+        it('should not write any files when board.yaml does not exist', async () => {
+            vi.spyOn(workspace.fs, 'readFile').mockRejectedValue(new Error('not found'));
+            const writeSpy = vi.spyOn(workspace.fs, 'writeFile').mockResolvedValue(undefined);
+            const dirSpy = vi.spyOn(workspace.fs, 'createDirectory').mockResolvedValue(undefined);
+
+            const store = new BoardConfigStore(workspaceUri);
+            await store.init();
+
+            expect(writeSpy).not.toHaveBeenCalled();
+            expect(dirSpy).not.toHaveBeenCalled();
+        });
+
+        it('should load config from existing board.yaml without writing', async () => {
+            const configYaml = 'lanes:\n  - todo\n  - doing\n  - done\n';
+            vi.spyOn(workspace.fs, 'readFile').mockResolvedValue(new TextEncoder().encode(configYaml));
+            const writeSpy = vi.spyOn(workspace.fs, 'writeFile').mockResolvedValue(undefined);
+            vi.spyOn(workspace.fs, 'createDirectory').mockResolvedValue(undefined);
+
+            const store = new BoardConfigStore(workspaceUri);
+            await store.init();
+
+            expect(writeSpy).not.toHaveBeenCalled();
+            expect(store.get().lanes).toEqual(['todo', 'doing', 'done']);
+        });
+
+        it('should stay with default config when board.yaml is absent', async () => {
+            vi.spyOn(workspace.fs, 'readFile').mockRejectedValue(new Error('not found'));
+            vi.spyOn(workspace.fs, 'writeFile').mockResolvedValue(undefined);
+            vi.spyOn(workspace.fs, 'createDirectory').mockResolvedValue(undefined);
+
+            const store = new BoardConfigStore(workspaceUri);
+            await store.init();
+
+            expect(store.get().lanes.length).toBeGreaterThan(0);
+        });
+    });
+
+    describe('initialise', () => {
+        const workspaceUri = Uri.file('/test-workspace');
+
+        beforeEach(() => {
+            vi.restoreAllMocks();
+        });
+
+        it('should create directories and write board.yaml when not present', async () => {
+            vi.spyOn(workspace.fs, 'stat').mockRejectedValue(new Error('not found'));
+            vi.spyOn(workspace.fs, 'readFile').mockRejectedValue(new Error('not found'));
+            const dirSpy = vi.spyOn(workspace.fs, 'createDirectory').mockResolvedValue(undefined);
+            const writeSpy = vi.spyOn(workspace.fs, 'writeFile').mockResolvedValue(undefined);
+
+            const store = new BoardConfigStore(workspaceUri);
+            await store.initialise();
+
+            expect(dirSpy).toHaveBeenCalled();
+            const boardYamlCall = writeSpy.mock.calls.find(
+                ([uri]) => (uri as any).fsPath.endsWith('board.yaml'),
+            );
+            expect(boardYamlCall).toBeDefined();
+        });
+
+        it('should not overwrite board.yaml when it already exists', async () => {
+            vi.spyOn(workspace.fs, 'stat').mockResolvedValue({ type: 1, ctime: 0, mtime: 0, size: 10 } as any);
+            vi.spyOn(workspace.fs, 'readFile').mockResolvedValue(
+                new TextEncoder().encode('lanes:\n  - todo\n  - done\n'),
+            );
+            vi.spyOn(workspace.fs, 'createDirectory').mockResolvedValue(undefined);
+            const writeSpy = vi.spyOn(workspace.fs, 'writeFile').mockResolvedValue(undefined);
+
+            const store = new BoardConfigStore(workspaceUri);
+            await store.initialise();
+
+            const boardYamlCall = writeSpy.mock.calls.find(
+                ([uri]) => (uri as any).fsPath.endsWith('board.yaml'),
+            );
+            expect(boardYamlCall).toBeUndefined();
         });
     });
 

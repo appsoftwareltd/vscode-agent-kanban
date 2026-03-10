@@ -15,6 +15,7 @@ export class KanbanEditorPanel {
     private _disposables: vscode.Disposable[] = [];
     private _webviewReady = false;
     private _pendingMessages: unknown[] = [];
+    private _isInitialised: boolean;
 
     // ── Public API ───────────────────────────────────────────────────────────
 
@@ -24,6 +25,7 @@ export class KanbanEditorPanel {
         taskStore: TaskStore,
         boardConfigStore: BoardConfigStore,
         logger?: LogService,
+        isInitialised = true,
     ): KanbanEditorPanel {
         const column =
             vscode.window.activeTextEditor?.viewColumn ?? vscode.ViewColumn.One;
@@ -57,6 +59,7 @@ export class KanbanEditorPanel {
             taskStore,
             boardConfigStore,
             logger,
+            isInitialised,
         );
         return KanbanEditorPanel.currentPanel;
     }
@@ -68,6 +71,7 @@ export class KanbanEditorPanel {
         taskStore: TaskStore,
         boardConfigStore: BoardConfigStore,
         logger?: LogService,
+        isInitialised = true,
     ): void {
         KanbanEditorPanel.currentPanel = new KanbanEditorPanel(
             panel,
@@ -75,12 +79,19 @@ export class KanbanEditorPanel {
             taskStore,
             boardConfigStore,
             logger,
+            isInitialised,
         );
     }
 
     /** Push fresh board state to the webview. */
     public async refresh(): Promise<void> {
         await this._sendState();
+    }
+
+    /** Update initialised state and push to webview. */
+    public setInitialised(flag: boolean): void {
+        this._isInitialised = flag;
+        this._sendState();
     }
 
     /** Tell the webview to open the create-task modal. */
@@ -101,9 +112,11 @@ export class KanbanEditorPanel {
         private readonly _taskStore: TaskStore,
         private readonly _boardConfigStore: BoardConfigStore,
         logger?: LogService,
+        isInitialised = true,
     ) {
         this._panel = panel;
         this._logger = logger ?? NO_OP_LOGGER;
+        this._isInitialised = isInitialised;
 
         // Enforce options (important when reviving a deserialized panel)
         this._panel.webview.options = {
@@ -172,7 +185,7 @@ export class KanbanEditorPanel {
         const config = this._boardConfigStore.get();
         await this._panel.webview.postMessage({
             type: 'stateUpdate',
-            state: { tasks, config },
+            state: { tasks, config, isInitialised: this._isInitialised },
         });
     }
 
@@ -187,6 +200,10 @@ export class KanbanEditorPanel {
                     this._panel.webview.postMessage(msg);
                 }
                 this._pendingMessages = [];
+                break;
+
+            case 'initialise':
+                await vscode.commands.executeCommand('agentKanban.initialise');
                 break;
 
             case 'openTask': {

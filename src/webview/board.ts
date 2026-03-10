@@ -11,6 +11,7 @@ const vscode = acquireVsCodeApi();
 interface BoardState {
     tasks: Task[];
     config: BoardConfig;
+    isInitialised?: boolean;
 }
 
 // ── State ────────────────────────────────────────────────────────────────────
@@ -120,6 +121,20 @@ document.addEventListener('DOMContentLoaded', () => {
 function renderBoard(): void {
     const app = document.getElementById('app');
     if (!app) {
+        return;
+    }
+
+    // Show uninitialised prompt if workspace has not been set up
+    if (state.isInitialised === false) {
+        app.innerHTML = `
+            <div class="uninit-panel">
+                <div class="uninit-title">Agent Kanban</div>
+                <div class="uninit-desc">This workspace has not yet been initialised. Set up the Kanban board and agent instruction files to get started.</div>
+                <button class="uninit-btn" id="btn-uninit-init">Initialise Agent Kanban</button>
+            </div>`;
+        document.getElementById('btn-uninit-init')?.addEventListener('click', () => {
+            vscode.postMessage({ type: 'initialise' });
+        });
         return;
     }
 

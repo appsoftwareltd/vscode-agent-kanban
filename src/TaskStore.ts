@@ -22,14 +22,28 @@ export class TaskStore {
         this.logger = logger ?? NO_OP_LOGGER;
     }
 
+    /**
+     * Read-only init: migrates flat task files (if any) and reloads tasks.
+     * Does NOT create the tasks directory.
+     * Safe to call on uninitialised workspaces — silently loads nothing if
+     * the directory does not exist.
+     */
     async init(): Promise<void> {
+        await this.migrateFlat();
+        await this.reload();
+    }
+
+    /**
+     * Full first-time setup: creates the tasks directory then calls init().
+     * Safe to call on already-initialised workspaces (idempotent).
+     */
+    async initialise(): Promise<void> {
         try {
             await vscode.workspace.fs.createDirectory(this.tasksUri);
         } catch {
             // directory may already exist
         }
-        await this.migrateFlat();
-        await this.reload();
+        await this.init();
     }
 
     /**

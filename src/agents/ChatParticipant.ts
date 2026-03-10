@@ -40,6 +40,7 @@ type Verb = typeof VERBS[number];
 export class ChatParticipant {
     private readonly logger: LogService;
     private readonly extensionUri: vscode.Uri;
+    private readonly getIsInitialised: () => boolean;
 
     /** Tracks the last task selected via /task, used by verb commands. */
     lastSelectedTaskId: string | undefined;
@@ -48,9 +49,11 @@ export class ChatParticipant {
         private readonly taskStore: TaskStore,
         private readonly boardConfigStore: BoardConfigStore,
         extensionUri: vscode.Uri,
+        getIsInitialised: (() => boolean) | undefined = undefined,
         logger?: LogService,
     ) {
         this.extensionUri = extensionUri;
+        this.getIsInitialised = getIsInitialised ?? (() => true);
         this.logger = logger ?? NO_OP_LOGGER;
     }
 
@@ -202,6 +205,12 @@ export class ChatParticipant {
         }
 
         this.lastSelectedTaskId = undefined;
+
+        // Auto-initialise if not yet set up (using @kanban /new implies consent)
+        if (!this.getIsInitialised()) {
+            await vscode.commands.executeCommand('agentKanban.initialise');
+        }
+
         await this.syncInstructionFile();
 
         const config = this.boardConfigStore.get();
@@ -254,8 +263,8 @@ export class ChatParticipant {
         this.lastSelectedTaskId = task.id;
 
         // Sync INSTRUCTION.md and AGENTS.md section from bundled templates
-        const instrUri = await this.syncInstructionFile();
-        await this.syncAgentsMdSection();
+        const instrUri = this.getIsInitialised() ? await this.syncInstructionFile() : undefined;
+        if (this.getIsInitialised()) { await this.syncAgentsMdSection(); }
 
         const taskUri = this.taskStore.getTaskUri(task.id);
         const taskRelPath = vscode.workspace.asRelativePath(taskUri);
@@ -357,8 +366,8 @@ export class ChatParticipant {
         this.logger.info('chatParticipant', `/${verbs.join('+')} on: ${task.id} (${task.title})`);
 
         // Sync INSTRUCTION.md and AGENTS.md section from bundled templates
-        const instrUri = await this.syncInstructionFile();
-        await this.syncAgentsMdSection();
+        const instrUri = this.getIsInitialised() ? await this.syncInstructionFile() : undefined;
+        if (this.getIsInitialised()) { await this.syncAgentsMdSection(); }
 
         const taskUri = this.taskStore.getTaskUri(task.id);
         const taskRelPath = vscode.workspace.asRelativePath(taskUri);
