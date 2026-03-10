@@ -26,6 +26,17 @@ let modalTaskId: string | null = null;
 let modalLabels: string[] = [];
 let modalMode: 'create' | 'edit' = 'edit';
 
+interface ModalSnapshot {
+    title: string;
+    description: string;
+    lane: string;
+    priority: string;
+    assignee: string;
+    dueDate: string;
+    labels: string[];
+}
+let modalSnapshot: ModalSnapshot | null = null;
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 function esc(s: string): string {
@@ -212,6 +223,7 @@ function buildBoardHtml(): string {
             ${lanes.map((lane) => buildLaneHtml(lane, state.tasks.filter((t) => t.lane === lane))).join('')}
         </div>
         ${buildModalHtml()}
+        ${buildDiscardConfirmHtml()}
         ${buildConfirmDialogHtml()}
     `;
 }
@@ -391,11 +403,20 @@ function handleClick(e: MouseEvent): void {
         vscode.postMessage({ type: 'addLane' });
         return;
     }
-    if ((t as HTMLElement).id === 'modal-close' || (t as HTMLElement).id === 'modal-cancel') {
+    if ((t as HTMLElement).id === 'modal-close') {
+        tryCloseModal();
+        return;
+    }
+    if ((t as HTMLElement).id === 'modal-cancel') {
         closeModal();
         return;
     }
-    if ((t as HTMLElement).id === 'modal-backdrop') {
+    if ((t as HTMLElement).id === 'modal-discard-keep') {
+        hideDiscardConfirm();
+        return;
+    }
+    if ((t as HTMLElement).id === 'modal-discard-confirm') {
+        hideDiscardConfirm();
         closeModal();
         return;
     }
@@ -729,6 +750,7 @@ function openModal(taskId: string): void {
     document.getElementById('modal-backdrop')?.removeAttribute('hidden');
     configureModalMode();
     populateModal(task);
+    captureModalSnapshot();
 }
 
 function openCreateModal(): void {
@@ -768,6 +790,7 @@ function openCreateModal(): void {
     initAutocomplete('modal-label-input', 'label-ac-dropdown', () => state.config.labels ?? [], 'add-tag');
 
     renderTags();
+    captureModalSnapshot();
     titleInput?.focus();
 }
 
@@ -835,9 +858,60 @@ function populateModal(task: Task): void {
 
 function closeModal(): void {
     document.getElementById('modal-backdrop')?.setAttribute('hidden', '');
+    hideDiscardConfirm();
     modalTaskId = null;
     modalLabels = [];
     modalMode = 'edit';
+    modalSnapshot = null;
+}
+
+function captureModalSnapshot(): void {
+    modalSnapshot = {
+        title: (document.getElementById('modal-title-input') as HTMLInputElement | null)?.value ?? '',
+        description: (document.getElementById('modal-description') as HTMLTextAreaElement | null)?.value ?? '',
+        lane: (document.getElementById('modal-lane') as HTMLSelectElement | null)?.value ?? '',
+        priority: (document.getElementById('modal-priority') as HTMLSelectElement | null)?.value ?? '',
+        assignee: (document.getElementById('modal-assignee') as HTMLInputElement | null)?.value ?? '',
+        dueDate: (document.getElementById('modal-duedate') as HTMLInputElement | null)?.value ?? '',
+        labels: [...modalLabels],
+    };
+}
+
+function isModalDirty(): boolean {
+    if (!modalSnapshot) {
+        return false;
+    }
+    const lane = (document.getElementById('modal-lane') as HTMLSelectElement | null)?.value ?? '';
+    const priority = (document.getElementById('modal-priority') as HTMLSelectElement | null)?.value ?? '';
+    const assignee = (document.getElementById('modal-assignee') as HTMLInputElement | null)?.value ?? '';
+    const dueDate = (document.getElementById('modal-duedate') as HTMLInputElement | null)?.value ?? '';
+    const title = (document.getElementById('modal-title-input') as HTMLInputElement | null)?.value ?? '';
+    const description = (document.getElementById('modal-description') as HTMLTextAreaElement | null)?.value ?? '';
+    return (
+        title !== modalSnapshot.title ||
+        description !== modalSnapshot.description ||
+        lane !== modalSnapshot.lane ||
+        priority !== modalSnapshot.priority ||
+        assignee !== modalSnapshot.assignee ||
+        dueDate !== modalSnapshot.dueDate ||
+        JSON.stringify([...modalLabels].sort()) !== JSON.stringify([...modalSnapshot.labels].sort())
+    );
+}
+
+function tryCloseModal(): void {
+    if (isModalDirty()) {
+        showDiscardConfirm();
+    } else {
+        closeModal();
+    }
+}
+
+function showDiscardConfirm(): void {
+    document.getElementById('modal-discard-backdrop')?.removeAttribute('hidden');
+}
+
+function hideDiscardConfirm(): void {
+    document.getElementById('modal-discard-backdrop')?.setAttribute('hidden', '');
 }
 
 function saveModal(): void {
@@ -936,6 +1010,22 @@ function renderTags(): void {
                 `<span class="tag-chip">${esc(l)}<button class="tag-remove" data-remove-tag="${esc(l)}" type="button">&times;</button></span>`,
         )
         .join('');
+}
+
+// ── Discard Confirm Dialog ───────────────────────────────────────────────────
+
+function buildDiscardConfirmHtml(): string {
+    return `
+        <div class="confirm-backdrop" id="modal-discard-backdrop" hidden>
+            <div class="confirm-dialog">
+                <p class="confirm-message">You have unsaved changes. Discard them?</p>
+                <div class="confirm-actions">
+                    <button class="btn-secondary" id="modal-discard-keep">Keep editing</button>
+                    <button class="btn-primary" id="modal-discard-confirm">Discard</button>
+                </div>
+            </div>
+        </div>
+    `;
 }
 
 // ── Confirm Dialog ────────────────────────────────────────────────────────────
