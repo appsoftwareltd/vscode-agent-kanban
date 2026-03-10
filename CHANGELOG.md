@@ -2,9 +2,13 @@
 
 All notable changes to AS Notes will be documented here.
 
-## [1.0.1] - 2026-03-10
+## [1.0.2] - 2026-03-10
 
 - Bugfix: Fix task editor close on mouse event bug.
+
+## [1.0.1] - 2026-03-10
+
+- Chore: Bump releases.
 
 ## [1.0.0] - 2026-03-09
 
