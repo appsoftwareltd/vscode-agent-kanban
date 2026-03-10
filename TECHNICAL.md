@@ -28,55 +28,77 @@ src/
 interface Task {
     id: string;           // e.g. task_20260308_143045123_abc123_my_task
     title: string;
-    lane: string;         // Lane ID the task is in
+    lane: string;         // Lane slug — determined by directory, not frontmatter
     created: string;      // ISO 8601 timestamp
     updated: string;      // ISO 8601 timestamp (auto-updated on save)
     description: string;
 }
 ```
 
-Conversation history is stored in the markdown body of the task file (not in the Task interface). Uses `[user]:`/`[agent]:` markers.
+Conversation history is stored in the markdown body of the task file (not in the Task interface). Uses `[user]`/`[agent]` markers.
 
 ### BoardConfig (`types.ts`)
 
 ```typescript
 interface BoardConfig {
-    lanes: LaneConfig[];  // Ordered lane definitions
-    basePrompt: string;   // System-level prompt prepended to all agent requests
+    lanes: string[];      // Ordered lane slugs (e.g. ['todo', 'doing', 'done'])
+    users?: string[];     // Known assignees (auto-populated from task frontmatter)
+    labels?: string[];    // Known labels (auto-populated from task frontmatter)
 }
 
-interface LaneConfig {
-    id: string;           // URL-safe identifier
-    name: string;         // Display name
-}
+const PROTECTED_LANES = ['todo', 'done'];
+const RESERVED_LANES = ['archive'];
 
-const PROTECTED_LANE_NAMES = ['todo', 'done'];
-function isProtectedLane(lane: LaneConfig): boolean  // matches by name, case-insensitive
+function slugifyLane(name: string): string     // lowercase, non-alphanumeric→hyphens
+function displayLane(slug: string): string     // hyphens→spaces, UPPERCASE  
+function isProtectedLane(slug: string): boolean
+function isReservedLane(slug: string): boolean
 ```
+
+### Lane Naming Model
+
+- **Storage**: Lanes are slugs (lowercase, hyphen-separated). E.g. `todo`, `in-progress`, `code-review`.
+- **Directories**: Each lane maps to a subdirectory under `.agentkanban/tasks/`. E.g. `tasks/todo/`, `tasks/in-progress/`.
+- **Display**: `displayLane(slug)` converts to UPPERCASE with hyphens→spaces. E.g. `in-progress` → `IN PROGRESS`.
+- **Input**: User input is slugified via `slugifyLane()`. E.g. `Code Review!` → `code-review`.
+- **Archive**: The `archive/` directory is reserved. Tasks in it are hidden from the board. It replaces the old `archived` boolean flag.
 
 ## Persistence Layer
 
 ### TaskStore (`TaskStore.ts`)
 
-- Reads/writes `.md` files with YAML frontmatter under `.agentkanban/tasks/`
+- Reads/writes `.md` files with YAML frontmatter under `.agentkanban/tasks/<lane-slug>/`
+- Tasks live in subdirectories matching their lane slug (e.g. `tasks/todo/`, `tasks/doing/`)
 - Task filenames: `task_YYYYMMDD_HHmmssfff_XXXXXX_slug.md` (ID derived from filename minus `.md`)
-- `reload()` scans for `task_*.md` files, parses YAML frontmatter only, derives ID from filename
-- `save()` preserves existing markdown body (conversation), only updates frontmatter
+- `init()` calls `migrateFlat()` (moves legacy flat task files into lane subdirectories), then `reload()`
+- `reload()` enumerates subdirectories (excluding `archive`), parses tasks, sets `task.lane` from directory name
+- `save()` writes to `tasks/<task.lane>/`, preserves existing markdown body
+- `moveTaskToLane(id, newLane)` — moves task file (and todo file) between lane directories via `vscode.workspace.fs.rename()`
+- `getDirectories()` — lists task subdirectory names for directory reconciliation
 - `createTask()` generates IDs via `generateId()` using timestamp + random + slugified title
-- `getTaskUri(id)` / `getTodoUri(taskId)` — construct URIs for task/todo files
+- `getTaskUri(id)` / `getTodoUri(taskId)` — construct URIs using cached lane directory
 - `findByTitle(query, excludeLane?)` — case-insensitive title search, optionally filtering by lane
 - `delete()` removes both the task file and its associated `todo_*.md` file
 - Static methods: `serialise()`, `deserialise()`, `splitFrontmatter()`, `slugify()`, `generateId()`
-- `splitFrontmatter()` skips the `\n` immediately after the closing `---` fence to prevent blank-line accumulation on round-trips (since `serialise()` adds its own `\n` after `---`)
+- `serialise()` does NOT write `lane` to frontmatter — lane is determined by directory
+- `deserialise()` does NOT read `lane` from frontmatter — sets `lane: ''` for caller to populate from directory
 - Uses the `yaml` npm package (v2.x) for frontmatter parsing/stringifying with `lineWidth: 0`
 - In-memory cache with `Map<string, Task>`, `onDidChange` event for UI refresh
+
+#### Migration from Flat Layout
+
+`migrateFlat()` runs on `init()` and handles the transition from the old flat `tasks/` layout:
+
+1. Scans for `task_*.md` files directly in `tasks/` (not in subdirectories)
+2. Reads legacy `lane` field from frontmatter to determine the target subdirectory
+3. If `archived: true`, moves to `tasks/archive/`
+4. Moves each file to the appropriate lane subdirectory
 
 ### Task File Format
 
 ```markdown
 ---
 title: Implement OAuth2
-lane: doing
 created: 2026-03-08T10:00:00.000Z
 updated: 2026-03-08T14:30:00.000Z
 description: OAuth2 integration for the API
@@ -84,12 +106,14 @@ description: OAuth2 integration for the API
 
 ## Conversation
 
-[user]: Let's plan the OAuth2 implementation...
+[user] Let's plan the OAuth2 implementation...
 
-[agent]: Here's my analysis...
+[agent] Here's my analysis...
 ```
 
-Frontmatter fields: `title` (required), `lane` (defaults to `todo`), `created`, `updated`, `description` (omitted if empty).
+Frontmatter fields: `title` (required), `created`, `updated`, `description` (omitted if empty). Optional metadata: `priority`, `assignee`, `labels`, `dueDate`, `sortOrder`.
+
+**Note**: `lane` is NOT stored in frontmatter — the lane is determined by which subdirectory the file lives in.
 
 ### Todo File Format
 
@@ -109,8 +133,15 @@ task: task_20260308_143045123_abc123_oauth2
 ### BoardConfigStore (`BoardConfigStore.ts`)
 
 - Reads/writes `.agentkanban/board.yaml`
-- Creates default config (3 lanes: Todo, Doing, Done; empty base prompt) if file doesn't exist
+- Creates default config (3 lanes: `todo`, `doing`, `done`) if file doesn't exist
 - `init()` creates the `.agentkanban/` directory, ensures `.gitignore` exists, then loads or creates `board.yaml`
+- On `init()`, auto-migrates old `{id, name}` object format to flat slug list
+- `ensureLaneDirectories()` — creates subdirectories under `tasks/` for all configured lanes
+- `reconcileWithDirectories(taskDirs)` — syncs board.yaml with actual task directories:
+  - Unknown directories → added as new lanes in config
+  - Non-conforming directory names → auto-renamed to slugified form
+  - Reserved directories (e.g. `archive`) are skipped
+- `reconcileMetadata(tasks)` — scans task assignees/labels and adds any missing values to board.yaml
 - `ensureGitignore()` — creates `.agentkanban/.gitignore` (ignoring `logs/`) if it doesn't already exist. Idempotent; never overwrites a user-edited file.
 - `update()` accepts partial config for incremental changes
 - Fires `onDidChange` event
@@ -124,8 +155,9 @@ task: task_20260308_143045123_abc123_oauth2
 - Drag-and-drop via native HTML5 drag events
 - Card click opens the task's `.md` file directly via `vscode.workspace.openTextDocument()`
 - **Done lane protection**: Remove button hidden for the Done lane; `removeLane` handler blocks deletion with a warning
-- **Protected lanes**: Lanes named "Todo" or "Done" (case-insensitive) cannot be removed or renamed. Uses `isProtectedLane()` from `types.ts`.
+- **Protected lanes**: Lanes named "todo" or "done" cannot be removed or renamed. Uses `isProtectedLane()` from `types.ts`.
 - **Lane removal with task cleanup**: Removing a non-protected lane deletes all tasks in that lane. If tasks exist, a confirmation dialog is shown first.
+- **Archiving**: Archive moves a task to the `archive/` directory via `moveTaskToLane()`. Archived tasks are hidden from the board. A confirmation dialog is shown before archiving.
 - **Lane drag-and-drop reordering**: Lane headers are draggable. Dropping a lane on another lane reorders the `config.lanes` array via a `moveLane` message. Uses a separate data transfer type (`application/x-lane-id`) to distinguish from card drags.
 - Communication via `postMessage`/`onDidReceiveMessage`:
   - `newTask` — prompts for title, creates markdown file
@@ -147,7 +179,10 @@ Lightweight `@kanban` chat participant that routes commands to task markdown fil
 |---------|---------|-------------|
 | `/new` | `handleNew()` | Creates a new task file, reports its path |
 | `/task` | `handleTask()` | Selects a task, opens file in editor, outputs context |
-| (none) | default | Shows available commands; handles verb followup clicks |
+| `/plan` | `handleVerb()` | Re-injects context and starts planning for the selected task |
+| `/todo` | `handleVerb()` | Re-injects context and generates TODOs for the selected task |
+| `/implement` | `handleVerb()` | Re-injects context and starts implementation for the selected task |
+| (none) | default | Shows available commands |
 
 #### Task Resolution
 
@@ -163,11 +198,12 @@ Returns `{ task, freeText }` where `freeText` is any remaining prompt after the 
 
 1. If no prompt: lists active tasks
 2. Resolve task from prompt via `resolveTaskFromPrompt()`
-3. Ensure `.agentkanban/INSTRUCTION.md` exists (copy from bundled template if missing)
-4. Set `lastSelectedTaskTitle` for verb followups
-5. Open the task file in the editor via `vscode.window.showTextDocument()`
-6. Output INSTRUCTION.md reference, custom instruction file reference (if configured), task title, task file path
-7. Guide user to type `plan`, `todo`, or `implement` in Copilot agent mode
+3. Sync `.agentkanban/INSTRUCTION.md` and AGENTS.md managed section from bundled templates
+4. Set `lastSelectedTaskId` for verb followups
+5. Attach INSTRUCTION.md and task file as `response.reference()` URIs for persistent context
+6. Open the task file in the editor via `vscode.window.showTextDocument()`
+7. Output INSTRUCTION.md reference, custom instruction file reference (if configured), task title, task file path
+8. Guide user to use `@kanban /plan`, `/todo`, `/implement` verb commands to begin working
 
 ##### Custom Instruction File
 
@@ -175,14 +211,22 @@ When `agentKanban.customInstructionFile` is set, `handleTask()` resolves the pat
 
 #### /new Flow
 
-1. Clear `lastSelectedTaskTitle` (resets verb followups)
+1. Clear `lastSelectedTaskId` (resets verb followups)
 2. Ensure `.agentkanban/INSTRUCTION.md` exists
 3. Create the task file
 4. Report path and suggest `@kanban /task <title>` to start working
 
-#### Verb Handling (Default Case)
+#### Verb Commands (/plan, /todo, /implement)
 
-When the default handler receives a prompt matching a verb (`plan`, `todo`, `implement`) and `lastSelectedTaskTitle` is set, it shows a guidance message reminding the user to type the verb in Copilot agent mode (without `@kanban`). This handles clicks on verb followup buttons.
+1. If `lastSelectedTaskId` is not set: lists active tasks and prompts user to run `/task` first
+2. Look up task from `lastSelectedTaskId`; if task is done/missing, clear selection and prompt re-selection
+3. Sync INSTRUCTION.md and AGENTS.md managed section
+4. Attach INSTRUCTION.md and task file as `response.reference()` URIs for persistent context
+5. Open the task file in editor
+6. Output: INSTRUCTION.md reference, verb label + task title, task file path, additional context (if any)
+7. Instruct agent to read the task file and perform the verb action
+
+**Verb combinations**: The prompt can contain `#plan`, `#todo`, `#implement` hash tags to combine verbs. E.g. `@kanban /todo #implement` runs both todo and implement. `parseVerbs(command, prompt)` extracts all verbs in canonical order (plan → todo → implement).
 
 ### Helper: `getActiveTaskTitles()`
 
@@ -190,18 +234,46 @@ Returns titles of all non-Done tasks. Used in the default (no command) response 
 
 ### INSTRUCTION.md — Agent Context Injection
 
-`ensureInstructionFile()` checks for `.agentkanban/INSTRUCTION.md` in the workspace. If missing, copies the bundled template from `assets/INSTRUCTION.md` (shipped with the extension). Called at the start of every action command.
+`syncInstructionFile()` syncs `.agentkanban/INSTRUCTION.md` in the workspace from the bundled template (`assets/INSTRUCTION.md`). Always overwrites — this file is managed by the extension, not user-editable. Called at the start of every action command.
 
-The instruction file reference is injected into the chat response as: `Read .agentkanban/INSTRUCTION.md first for workflow instructions.`
+The instruction file reference is injected into the chat response as: `Read .agentkanban/INSTRUCTION.md for workflow instructions.`
 
-The file is editable by the user. Deleting it causes it to be re-created from the template on next command use.
+### AGENTS.md — Managed Section
+
+`syncAgentsMdSection()` manages a sentinel-delimited section in the workspace's `AGENTS.md`. VS Code re-injects `AGENTS.md` into the system prompt on **every agent mode turn**, making it the most reliable context injection mechanism.
+
+The section is delimited by `<!-- BEGIN AGENT KANBAN — DO NOT EDIT THIS SECTION -->` and `<!-- END AGENT KANBAN -->` sentinel comments. The method:
+
+1. Reads existing `AGENTS.md` (or starts with empty string if the file doesn't exist)
+2. Finds the sentinel block (if present) and replaces it, or appends the block at the end
+3. Writes the file back — user content outside the sentinels is never modified
+
+Section content:
+```markdown
+<!-- BEGIN AGENT KANBAN — DO NOT EDIT THIS SECTION -->
+## Agent Kanban
+
+Read `.agentkanban/INSTRUCTION.md` for task workflow rules.
+Read `.agentkanban/memory.md` for project context.
+
+If a task file (`.agentkanban/tasks/**/*.md`) was referenced earlier in this conversation, re-read it before responding.
+<!-- END AGENT KANBAN -->
+```
+
+Called on activation and by every `/task` and verb command. This ensures:
+- The agent always knows INSTRUCTION.md and memory.md exist (every turn, all threads)
+- The section is task-agnostic — safe for multiple concurrent chat threads
+- The "re-read task file" directive prompts the agent to actively recover its task context
+
+The layered approach combines AGENTS.md (system-prompt level, every turn), `response.reference()` (per-thread URIs), verb commands (on-demand refresh), and editor tabs (persistent while open) to eliminate context decay.
 
 ### Followup Provider
 
 `getFollowups()` provides context-aware suggestions:
 
-- **After `/task` selects a task**: Returns verb followups — Plan, Todo, Implement — labelled with the selected task title. Tracks state via `lastSelectedTaskTitle`. When clicked, these go through the default handler which shows guidance.
+- **When a task is selected** (`lastSelectedTaskId` is set): Returns four verb command followups — Plan, Todo, Implement, Todo + Implement — each labelled with the selected task title. When clicked, these go through `handleVerb()` which re-injects full workflow context.
 - **Otherwise**: Returns a single `ChatFollowup` suggesting `/task` for the most recently updated active (non-Done) task.
+- If the selected task has been moved to Done or deleted, the selection is cleared and falls through to the `/task` suggestion.
 
 Tasks are sorted by `updated` timestamp (descending), falling back to `created`.
 
@@ -217,7 +289,9 @@ Registered on the chat participant in `extension.ts` via `participant.followupPr
 4. Register `BoardViewProvider` for sidebar
 5. Register `ChatParticipant` as `@kanban` with followup provider
 6. Register commands: `openTask`, `resetMemory`
-7. Create file watchers: `.agentkanban/tasks/**/*.md` and `.agentkanban/board.yaml`
+7. Create file watchers: `.agentkanban/tasks/**/*.md` (debounced 200ms, with directory reconciliation), `.agentkanban/tasks/*` (directory-level) and `.agentkanban/board.yaml`
+8. Run housekeeping reconciliation (sync assignees/labels from task frontmatter into board.yaml)
+9. Start 10-minute housekeeping interval for ongoing reconciliation
 
 ### Commands
 

@@ -1,23 +1,26 @@
 import * as vscode from 'vscode';
 import { parse, stringify } from 'yaml';
 import type { BoardConfig } from './types';
-import { DEFAULT_BOARD_CONFIG } from './types';
+import { DEFAULT_BOARD_CONFIG, slugifyLane, RESERVED_LANES } from './types';
 import type { LogService } from './LogService';
 import { NO_OP_LOGGER } from './LogService';
 
 const CONFIG_PATH = '.agentkanban/board.yaml';
 const GITIGNORE_PATH = '.agentkanban/.gitignore';
 const GITIGNORE_CONTENT = '# Agent Kanban — auto-generated\nlogs/\n';
+const TASKS_DIR = '.agentkanban/tasks';
 
 export class BoardConfigStore {
     private config: BoardConfig = { ...DEFAULT_BOARD_CONFIG, lanes: [...DEFAULT_BOARD_CONFIG.lanes] };
     private readonly configUri: vscode.Uri;
+    private readonly tasksUri: vscode.Uri;
     private readonly _onDidChange = new vscode.EventEmitter<void>();
     readonly onDidChange = this._onDidChange.event;
     private readonly logger: LogService;
 
     constructor(private readonly workspaceUri: vscode.Uri, logger?: LogService) {
         this.configUri = vscode.Uri.joinPath(workspaceUri, CONFIG_PATH);
+        this.tasksUri = vscode.Uri.joinPath(workspaceUri, TASKS_DIR);
         this.logger = logger ?? NO_OP_LOGGER;
     }
 
@@ -35,17 +38,86 @@ export class BoardConfigStore {
         try {
             const content = await vscode.workspace.fs.readFile(this.configUri);
             const text = new TextDecoder().decode(content);
-            const loaded = parse(text) as BoardConfig;
+            const loaded = parse(text) as any;
             if (loaded?.lanes) {
-                this.config = loaded;
-                this.logger.info('boardConfig', `Loaded config with ${loaded.lanes.length} lanes`);
+                // Migrate from old { id, name } format to flat slug list
+                if (loaded.lanes.length > 0 && typeof loaded.lanes[0] === 'object') {
+                    this.config = {
+                        ...loaded,
+                        lanes: (loaded.lanes as Array<{ id: string }>).map(l => l.id),
+                    };
+                    this.logger.info('boardConfig', 'Migrated lanes from object format to flat slugs');
+                    await this.save();
+                } else {
+                    this.config = loaded as BoardConfig;
+                }
+                this.logger.info('boardConfig', `Loaded config with ${this.config.lanes.length} lanes`);
             }
         } catch {
             // file doesn't exist yet — write defaults
             this.logger.info('boardConfig', 'No config found, writing defaults');
             await this.save();
         }
+
+        // Ensure lane directories exist
+        await this.ensureLaneDirectories();
+
         this._onDidChange.fire();
+    }
+
+    /** Create directories for all configured lanes. */
+    private async ensureLaneDirectories(): Promise<void> {
+        try {
+            await vscode.workspace.fs.createDirectory(this.tasksUri);
+        } catch { /* exists */ }
+        for (const lane of this.config.lanes) {
+            const dirUri = vscode.Uri.joinPath(this.tasksUri, lane);
+            try {
+                await vscode.workspace.fs.createDirectory(dirUri);
+            } catch { /* exists */ }
+        }
+    }
+
+    /**
+     * Reconcile board.yaml lanes with actual task directories.
+     * - Directories not in config → add to config
+     * - Config lanes without directories → create directories
+     * - Auto-slugify non-conforming directory names
+     */
+    async reconcileWithDirectories(taskDirs: string[]): Promise<void> {
+        let changed = false;
+
+        for (const dir of taskDirs) {
+            if (RESERVED_LANES.includes(dir)) {
+                continue;
+            }
+            const slug = slugifyLane(dir);
+            if (!slug) { continue; }
+
+            // Auto-rename non-conforming directory names
+            if (dir !== slug) {
+                const oldUri = vscode.Uri.joinPath(this.tasksUri, dir);
+                const newUri = vscode.Uri.joinPath(this.tasksUri, slug);
+                try {
+                    await vscode.workspace.fs.rename(oldUri, newUri, { overwrite: false });
+                    this.logger.info('boardConfig', `Renamed directory ${dir} → ${slug}`);
+                } catch (err: any) {
+                    this.logger.warn('boardConfig', `Failed to rename directory ${dir}: ${err.message}`);
+                    continue;
+                }
+            }
+
+            if (!this.config.lanes.includes(slug)) {
+                this.config.lanes.push(slug);
+                changed = true;
+                this.logger.info('boardConfig', `Added discovered lane: ${slug}`);
+            }
+        }
+
+        if (changed) {
+            await this.save();
+            this._onDidChange.fire();
+        }
     }
 
     get(): BoardConfig {
@@ -56,12 +128,66 @@ export class BoardConfigStore {
         if (config.lanes !== undefined) {
             this.config.lanes = config.lanes;
         }
-        if (config.basePrompt !== undefined) {
-            this.config.basePrompt = config.basePrompt;
+        if (config.users !== undefined) {
+            this.config.users = config.users;
+        }
+        if (config.labels !== undefined) {
+            this.config.labels = config.labels;
         }
         await this.save();
         this.logger.info('boardConfig', 'Board config updated');
         this._onDidChange.fire();
+    }
+
+    async addUser(name: string): Promise<void> {
+        const users = this.config.users ?? [];
+        if (!users.includes(name)) {
+            this.config.users = [...users, name];
+            await this.save();
+            this._onDidChange.fire();
+        }
+    }
+
+    async addLabel(name: string): Promise<void> {
+        const labels = this.config.labels ?? [];
+        if (!labels.includes(name)) {
+            this.config.labels = [...labels, name];
+            await this.save();
+            this._onDidChange.fire();
+        }
+    }
+
+    /**
+     * Scan task metadata and add any unknown assignees or labels to the config.
+     * Called on activation and periodically as housekeeping.
+     */
+    async reconcileMetadata(tasks: Array<{ assignee?: string; labels?: string[] }>): Promise<void> {
+        let changed = false;
+        const users = new Set(this.config.users ?? []);
+        const labels = new Set(this.config.labels ?? []);
+
+        for (const task of tasks) {
+            if (task.assignee && !users.has(task.assignee)) {
+                users.add(task.assignee);
+                changed = true;
+            }
+            if (task.labels) {
+                for (const label of task.labels) {
+                    if (!labels.has(label)) {
+                        labels.add(label);
+                        changed = true;
+                    }
+                }
+            }
+        }
+
+        if (changed) {
+            this.config.users = [...users];
+            this.config.labels = [...labels];
+            await this.save();
+            this.logger.info('boardConfig', 'Reconciled metadata — added missing users/labels');
+            this._onDidChange.fire();
+        }
     }
 
     private async ensureGitignore(): Promise<void> {

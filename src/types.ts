@@ -1,3 +1,5 @@
+export type Priority = 'critical' | 'high' | 'medium' | 'low' | 'none';
+
 export interface Task {
     id: string;
     title: string;
@@ -5,31 +7,45 @@ export interface Task {
     created: string;
     updated: string;
     description: string;
-}
-
-export interface LaneConfig {
-    id: string;
-    name: string;
+    priority?: Priority;
+    assignee?: string;
+    labels?: string[];
+    dueDate?: string;
+    sortOrder?: number;
 }
 
 export interface BoardConfig {
-    lanes: LaneConfig[];
-    basePrompt: string;
+    lanes: string[];
+    users?: string[];
+    labels?: string[];
 }
 
-export const DEFAULT_LANES: LaneConfig[] = [
-    { id: 'todo', name: 'Todo' },
-    { id: 'doing', name: 'Doing' },
-    { id: 'done', name: 'Done' },
-];
+export const DEFAULT_LANES: string[] = ['todo', 'doing', 'done'];
 
 export const DEFAULT_BOARD_CONFIG: BoardConfig = {
-    lanes: DEFAULT_LANES,
-    basePrompt: '',
+    lanes: [...DEFAULT_LANES],
 };
 
-export const PROTECTED_LANE_NAMES = ['todo', 'done'];
+export const PROTECTED_LANES = ['todo', 'done'];
+export const RESERVED_LANES = ['archive'];
 
-export function isProtectedLane(lane: LaneConfig): boolean {
-    return PROTECTED_LANE_NAMES.includes(lane.name.toLowerCase());
+/** Slugify a lane name: lowercase, non-alphanumeric→hyphens, trim edges. */
+export function slugifyLane(name: string): string {
+    return name
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '');
+}
+
+/** Display a lane slug in the UI: UPPERCASE, hyphens→spaces. */
+export function displayLane(slug: string): string {
+    return slug.replace(/-/g, ' ').toUpperCase();
+}
+
+export function isProtectedLane(slug: string): boolean {
+    return PROTECTED_LANES.includes(slug);
+}
+
+export function isReservedLane(slug: string): boolean {
+    return RESERVED_LANES.includes(slug);
 }

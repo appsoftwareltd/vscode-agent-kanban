@@ -12,9 +12,12 @@ function mockRequest(command: string | undefined, prompt: string) {
 
 function mockResponse() {
     const messages: string[] = [];
+    const references: any[] = [];
     return {
         markdown: (text: string) => { messages.push(text); },
+        reference: (uri: any) => { references.push(uri); },
         messages,
+        references,
     } as any;
 }
 
@@ -42,6 +45,7 @@ describe('ChatParticipant', () => {
 
             expect(response.messages.length).toBeGreaterThan(0);
             expect(response.messages[0]).toContain('Available commands');
+            expect(response.messages[0]).toContain('/plan');
         });
 
         it('should route /new command', async () => {
@@ -411,6 +415,144 @@ describe('ChatParticipant', () => {
         });
     });
 
+    describe('syncAgentsMdSection', () => {
+        it('should create AGENTS.md with sentinel section when file does not exist', async () => {
+            // readFile throws → file doesn't exist
+            vi.spyOn(workspace.fs, 'readFile').mockRejectedValueOnce(new Error('File not found'));
+            const writeSpy = vi.spyOn(workspace.fs, 'writeFile').mockResolvedValue(undefined);
+
+            await participant.syncAgentsMdSection();
+
+            expect(writeSpy).toHaveBeenCalled();
+            const written = new TextDecoder().decode(writeSpy.mock.calls[0][1] as Uint8Array);
+            expect(written).toContain('<!-- BEGIN AGENT KANBAN');
+            expect(written).toContain('<!-- END AGENT KANBAN -->');
+            expect(written).toContain('INSTRUCTION.md');
+            expect(written).toContain('memory.md');
+            expect(written).toContain('re-read it before responding');
+        });
+
+        it('should append sentinel section to existing AGENTS.md preserving user content', async () => {
+            const existingContent = '# My AGENTS\n\nSome user instructions.\n';
+            vi.spyOn(workspace.fs, 'readFile').mockResolvedValueOnce(
+                new TextEncoder().encode(existingContent),
+            );
+            const writeSpy = vi.spyOn(workspace.fs, 'writeFile').mockResolvedValue(undefined);
+
+            await participant.syncAgentsMdSection();
+
+            expect(writeSpy).toHaveBeenCalled();
+            const written = new TextDecoder().decode(writeSpy.mock.calls[0][1] as Uint8Array);
+            expect(written).toContain('# My AGENTS');
+            expect(written).toContain('Some user instructions.');
+            expect(written).toContain('<!-- BEGIN AGENT KANBAN');
+            expect(written).toContain('<!-- END AGENT KANBAN -->');
+        });
+
+        it('should replace existing sentinel section with updated content', async () => {
+            const existingContent = [
+                '# My AGENTS',
+                '',
+                '<!-- BEGIN AGENT KANBAN — DO NOT EDIT THIS SECTION -->',
+                '## Old Content',
+                '<!-- END AGENT KANBAN -->',
+                '',
+                'User content below.',
+            ].join('\n');
+            vi.spyOn(workspace.fs, 'readFile').mockResolvedValueOnce(
+                new TextEncoder().encode(existingContent),
+            );
+            const writeSpy = vi.spyOn(workspace.fs, 'writeFile').mockResolvedValue(undefined);
+
+            await participant.syncAgentsMdSection();
+
+            const written = new TextDecoder().decode(writeSpy.mock.calls[0][1] as Uint8Array);
+            expect(written).toContain('# My AGENTS');
+            expect(written).toContain('User content below.');
+            expect(written).toContain('INSTRUCTION.md');
+            expect(written).not.toContain('## Old Content');
+        });
+
+        it('should return undefined when no workspace folder', async () => {
+            const orig = workspace.workspaceFolders;
+            (workspace as any).workspaceFolders = undefined;
+
+            const result = await participant.syncAgentsMdSection();
+
+            expect(result).toBeUndefined();
+            (workspace as any).workspaceFolders = orig;
+        });
+
+        it('should return undefined on write failure', async () => {
+            vi.spyOn(workspace.fs, 'readFile').mockRejectedValueOnce(new Error('not found'));
+            vi.spyOn(workspace.fs, 'writeFile').mockRejectedValueOnce(new Error('write failed'));
+
+            const result = await participant.syncAgentsMdSection();
+
+            expect(result).toBeUndefined();
+        });
+    });
+
+    describe('response.reference() calls', () => {
+        let task: Task;
+
+        beforeEach(() => {
+            task = {
+                id: 'task_ref_1',
+                title: 'Ref Task',
+                lane: 'doing',
+                created: '2026-03-08T10:00:00.000Z',
+                updated: '2026-03-08T10:00:00.000Z',
+                description: '',
+            };
+            (taskStore as any).tasks.set(task.id, task);
+
+            vi.spyOn(workspace.fs, 'readFile').mockResolvedValue(
+                new TextEncoder().encode('# Template'),
+            );
+            vi.spyOn(workspace.fs, 'writeFile').mockResolvedValue(undefined);
+            vi.spyOn(workspace, 'openTextDocument').mockResolvedValue({} as any);
+            vi.spyOn(window, 'showTextDocument').mockResolvedValue(undefined as any);
+        });
+
+        it('should attach INSTRUCTION.md and task file references on /task', async () => {
+            const response = mockResponse();
+            await participant.handleRequest(mockRequest('task', 'Ref Task'), {} as any, response, mockToken);
+
+            expect(response.references.length).toBe(2);
+            // First reference is INSTRUCTION.md
+            const instrRef = response.references[0];
+            expect(instrRef.fsPath || instrRef.path).toContain('INSTRUCTION.md');
+            // Second reference is the task file
+            const taskRef = response.references[1];
+            expect(taskRef.fsPath || taskRef.path).toContain('task_ref_1');
+        });
+
+        it('should attach INSTRUCTION.md and task file references on verb commands', async () => {
+            participant.lastSelectedTaskId = task.id;
+            const response = mockResponse();
+            await participant.handleRequest(mockRequest('plan', ''), {} as any, response, mockToken);
+
+            expect(response.references.length).toBe(2);
+            const instrRef = response.references[0];
+            expect(instrRef.fsPath || instrRef.path).toContain('INSTRUCTION.md');
+            const taskRef = response.references[1];
+            expect(taskRef.fsPath || taskRef.path).toContain('task_ref_1');
+        });
+
+        it('should still attach task reference even if syncInstructionFile fails', async () => {
+            vi.spyOn(workspace.fs, 'readFile').mockRejectedValue(new Error('sync failed'));
+
+            const response = mockResponse();
+            await participant.handleRequest(mockRequest('task', 'Ref Task'), {} as any, response, mockToken);
+
+            // Only the task file reference (INSTRUCTION.md sync failed)
+            expect(response.references.length).toBe(1);
+            const taskRef = response.references[0];
+            expect(taskRef.fsPath || taskRef.path).toContain('task_ref_1');
+        });
+    });
+
     describe('getFollowups', () => {
         it('should return /task followup for most recent active task when no task selected', () => {
             const tasks: Task[] = [
@@ -443,5 +585,209 @@ describe('ChatParticipant', () => {
             expect(participant.getFollowups()).toEqual([]);
         });
 
+        it('should return verb followups when a task is selected', () => {
+            const task: Task = {
+                id: 'task_sel', title: 'Selected Task', lane: 'doing',
+                created: '2026-03-08T10:00:00.000Z', updated: '2026-03-08T10:00:00.000Z', description: '',
+            };
+            (taskStore as any).tasks.set(task.id, task);
+            participant.lastSelectedTaskId = 'task_sel';
+
+            const followups = participant.getFollowups();
+
+            expect(followups).toHaveLength(4);
+            expect(followups[0]).toEqual({ prompt: '', command: 'plan', label: 'Plan: Selected Task' });
+            expect(followups[1]).toEqual({ prompt: '', command: 'todo', label: 'Todo: Selected Task' });
+            expect(followups[2]).toEqual({ prompt: '', command: 'implement', label: 'Implement: Selected Task' });
+            expect(followups[3]).toEqual({ prompt: '#todo #implement', command: 'todo', label: 'Todo + Implement: Selected Task' });
+        });
+
+        it('should fall back to /task followup when selected task is done', () => {
+            const tasks: Task[] = [
+                { id: 'task_done', title: 'Done Task', lane: 'done', created: '2026-03-08T10:00:00.000Z', updated: '2026-03-08T10:00:00.000Z', description: '' },
+                { id: 'task_active', title: 'Active Task', lane: 'doing', created: '2026-03-07T10:00:00.000Z', updated: '2026-03-07T10:00:00.000Z', description: '' },
+            ];
+            for (const t of tasks) {
+                (taskStore as any).tasks.set(t.id, t);
+            }
+            participant.lastSelectedTaskId = 'task_done';
+
+            const followups = participant.getFollowups();
+
+            expect(followups).toHaveLength(1);
+            expect(followups[0].command).toBe('task');
+            expect(participant.lastSelectedTaskId).toBeUndefined();
+        });
+
+    });
+
+    describe('parseVerbs', () => {
+        it('should return primary verb when no hash tags in prompt', () => {
+            expect(participant.parseVerbs('plan', 'some context')).toEqual(['plan']);
+        });
+
+        it('should combine primary verb with hash-tagged verbs', () => {
+            expect(participant.parseVerbs('plan', '#todo #implement')).toEqual(['plan', 'todo', 'implement']);
+        });
+
+        it('should deduplicate when primary verb appears as hash tag too', () => {
+            expect(participant.parseVerbs('todo', '#todo #implement')).toEqual(['todo', 'implement']);
+        });
+
+        it('should return verbs in canonical order (plan, todo, implement)', () => {
+            expect(participant.parseVerbs('implement', '#plan')).toEqual(['plan', 'implement']);
+        });
+
+        it('should be case-insensitive for hash tags', () => {
+            expect(participant.parseVerbs('plan', '#TODO #Implement')).toEqual(['plan', 'todo', 'implement']);
+        });
+    });
+
+    describe('handleVerb', () => {
+        let task: Task;
+
+        beforeEach(() => {
+            task = {
+                id: 'task_verb_1',
+                title: 'Verb Task',
+                lane: 'doing',
+                created: '2026-03-08T10:00:00.000Z',
+                updated: '2026-03-08T10:00:00.000Z',
+                description: '',
+            };
+            (taskStore as any).tasks.set(task.id, task);
+
+            vi.spyOn(workspace.fs, 'readFile').mockResolvedValue(
+                new TextEncoder().encode('# Agent Kanban — Instruction'),
+            );
+            vi.spyOn(workspace.fs, 'writeFile').mockResolvedValue(undefined);
+            vi.spyOn(workspace, 'openTextDocument').mockResolvedValue({} as any);
+            vi.spyOn(window, 'showTextDocument').mockResolvedValue(undefined as any);
+        });
+
+        it('should prompt to select a task when no task is selected', async () => {
+            const response = mockResponse();
+            await participant.handleRequest(mockRequest('plan', ''), {} as any, response, mockToken);
+
+            expect(response.messages.some((m: string) => m.includes('No task selected'))).toBe(true);
+        });
+
+        it('should show no-tasks message when board is empty and no task selected', async () => {
+            (taskStore as any).tasks.clear();
+            const response = mockResponse();
+            await participant.handleRequest(mockRequest('plan', ''), {} as any, response, mockToken);
+
+            expect(response.messages.some((m: string) => m.includes('No active tasks'))).toBe(true);
+        });
+
+        it('should re-inject context for the selected task', async () => {
+            participant.lastSelectedTaskId = task.id;
+            const response = mockResponse();
+            await participant.handleRequest(mockRequest('plan', ''), {} as any, response, mockToken);
+
+            expect(response.messages.some((m: string) => m.includes('INSTRUCTION.md'))).toBe(true);
+            expect(response.messages.some((m: string) => m.includes('PLAN'))).toBe(true);
+            expect(response.messages.some((m: string) => m.includes('Verb Task'))).toBe(true);
+            expect(response.messages.some((m: string) => m.includes('Task file:'))).toBe(true);
+        });
+
+        it('should route /todo command', async () => {
+            participant.lastSelectedTaskId = task.id;
+            const response = mockResponse();
+            await participant.handleRequest(mockRequest('todo', ''), {} as any, response, mockToken);
+
+            expect(response.messages.some((m: string) => m.includes('TODO'))).toBe(true);
+        });
+
+        it('should route /implement command', async () => {
+            participant.lastSelectedTaskId = task.id;
+            const response = mockResponse();
+            await participant.handleRequest(mockRequest('implement', ''), {} as any, response, mockToken);
+
+            expect(response.messages.some((m: string) => m.includes('IMPLEMENT'))).toBe(true);
+        });
+
+        it('should combine verbs from hash tags', async () => {
+            participant.lastSelectedTaskId = task.id;
+            const response = mockResponse();
+            await participant.handleRequest(mockRequest('plan', '#todo #implement extra context'), {} as any, response, mockToken);
+
+            expect(response.messages.some((m: string) => m.includes('PLAN + TODO + IMPLEMENT'))).toBe(true);
+            expect(response.messages.some((m: string) => m.includes('extra context'))).toBe(true);
+        });
+
+        it('should include additional context from prompt', async () => {
+            participant.lastSelectedTaskId = task.id;
+            const response = mockResponse();
+            await participant.handleRequest(mockRequest('plan', 'focus on error handling'), {} as any, response, mockToken);
+
+            expect(response.messages.some((m: string) => m.includes('Additional context: focus on error handling'))).toBe(true);
+        });
+
+        it('should handle done task by clearing selection', async () => {
+            task.lane = 'done';
+            participant.lastSelectedTaskId = task.id;
+            const response = mockResponse();
+            await participant.handleRequest(mockRequest('plan', ''), {} as any, response, mockToken);
+
+            expect(response.messages.some((m: string) => m.includes('no longer active'))).toBe(true);
+            expect(participant.lastSelectedTaskId).toBeUndefined();
+        });
+
+        it('should open task file in editor with preserveFocus', async () => {
+            participant.lastSelectedTaskId = task.id;
+            const openSpy = vi.spyOn(workspace, 'openTextDocument');
+            const showSpy = vi.spyOn(window, 'showTextDocument');
+
+            const response = mockResponse();
+            await participant.handleRequest(mockRequest('implement', ''), {} as any, response, mockToken);
+
+            expect(openSpy).toHaveBeenCalled();
+            expect(showSpy).toHaveBeenCalledWith(expect.anything(), { preview: false, preserveFocus: true });
+        });
+
+        it('should end with "Type go" prompt', async () => {
+            participant.lastSelectedTaskId = task.id;
+            const response = mockResponse();
+            await participant.handleRequest(mockRequest('plan', ''), {} as any, response, mockToken);
+
+            const last = response.messages[response.messages.length - 1];
+            expect(last).toContain('go');
+        });
+    });
+
+    describe('lastSelectedTaskId tracking', () => {
+        it('should set lastSelectedTaskId on /task', async () => {
+            const task: Task = {
+                id: 'task_track_1', title: 'Track Task', lane: 'doing',
+                created: '2026-03-08T10:00:00.000Z', updated: '2026-03-08T10:00:00.000Z', description: '',
+            };
+            (taskStore as any).tasks.set(task.id, task);
+
+            vi.spyOn(workspace.fs, 'readFile').mockResolvedValue(new TextEncoder().encode('# Template'));
+            vi.spyOn(workspace.fs, 'writeFile').mockResolvedValue(undefined);
+            vi.spyOn(workspace, 'openTextDocument').mockResolvedValue({} as any);
+            vi.spyOn(window, 'showTextDocument').mockResolvedValue(undefined as any);
+
+            const response = mockResponse();
+            await participant.handleRequest(mockRequest('task', 'Track Task'), {} as any, response, mockToken);
+
+            expect(participant.lastSelectedTaskId).toBe('task_track_1');
+        });
+
+        it('should clear lastSelectedTaskId on /new', async () => {
+            participant.lastSelectedTaskId = 'task_old';
+
+            vi.spyOn(taskStore, 'createTask').mockReturnValue({
+                id: 'task_new', title: 'New', lane: 'todo',
+                created: '', updated: '', description: '',
+            });
+            vi.spyOn(taskStore, 'save').mockResolvedValue(undefined);
+
+            const response = mockResponse();
+            await participant.handleRequest(mockRequest('new', 'New Task'), {} as any, response, mockToken);
+
+            expect(participant.lastSelectedTaskId).toBeUndefined();
+        });
     });
 });

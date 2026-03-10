@@ -33,6 +33,7 @@ const workspace = {
         readDirectory: async (_uri: any) => [] as Array<[string, number]>,
         createDirectory: async (_uri: any) => { },
         delete: async (_uri: any) => { },
+        rename: async (_source: any, _target: any, _options?: any) => { },
     },
     asRelativePath: (uri: any) => {
         const p = typeof uri === 'string' ? uri : (uri.fsPath || uri.path || '');
