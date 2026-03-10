@@ -12,7 +12,7 @@ Agent Kanban references its own instruction set, so it doesn't interfere with yo
 
 ![VS Code Agent Kanban](https://github.com/appsoftwareltd/vscode-agent-kanban/blob/main/images/icon.png?raw=true)
 
-[Youtube (Quick Demo)](https://www.youtube.com/watch?v=Y4a3FnFftKw) (Note that the image below shows an updated UI, the video needs an update but illustrates the workflow)
+[Youtube (Quick Demo)](https://www.youtube.com/watch?v=Y4a3FnFftKw) (Note that the image below shows the updated UI, the video needs an update but illustrates the workflow)
 
 <img width="1042" height="632" alt="image" src="https://github.com/user-attachments/assets/19bfc5ac-1ed2-4c10-bc5e-8338fbb95922" />
 
