@@ -1,8 +1,8 @@
-# Agent Kanban
+# VS Code Agent Kanban
 
 [![CI](https://github.com/appsoftwareltd/vscode-agent-kanban/actions/workflows/ci.yml/badge.svg)](https://github.com/appsoftwareltd/vscode-agent-kanban/actions/workflows/ci.yml)
 
-**Agent Kanban is available on the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=AppSoftwareLtd.vscode-agent-kanban)**
+**VS Code Agent Kanban is available on the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=AppSoftwareLtd.vscode-agent-kanban)**
 
 A VS Code extension providing an integrated Kanban board for managing coding agent tasks designed to work with **GitHub Copilot Chat**. Tasks follow a **plan → todo → implement** workflow, with conversations stored as structured markdown files that are fully version-controllable.
 
@@ -11,6 +11,10 @@ A VS Code extension providing an integrated Kanban board for managing coding age
 Agent Kanban references its own instruction set, so it doesn't interfere with your existing agent files (e.g. AGENTS.md, skills etc).
 
 ![VS Code Agent Kanban](https://github.com/appsoftwareltd/vscode-agent-kanban/blob/main/images/icon.png?raw=true)
+
+[Youtube (Quick Demo)](https://www.youtube.com/watch?v=Y4a3FnFftKw)
+
+<img width="1888" height="1024" alt="image" src="https://github.com/user-attachments/assets/b7ebe7a8-87a8-41bb-84c9-f7f298408ee7" />
 
 ## Features
 
