@@ -26,6 +26,26 @@ describe('LogService', () => {
             expect(logger.isEnabled).toBe(false);
         });
 
+        it('should be disabled by default when no options are provided', () => {
+            const logDir = path.join(tmpDir, 'logs');
+            const logger = new LogService(logDir);
+
+            logger.info('test', 'hello');
+
+            expect(logger.isEnabled).toBe(false);
+            expect(fs.existsSync(logDir)).toBe(false);
+        });
+
+        it('should be disabled by default when empty options object is provided', () => {
+            const logDir = path.join(tmpDir, 'logs');
+            const logger = new LogService(logDir, {});
+
+            logger.info('test', 'hello');
+
+            expect(logger.isEnabled).toBe(false);
+            expect(fs.existsSync(logDir)).toBe(false);
+        });
+
         it('NO_OP_LOGGER should be disabled', () => {
             expect(NO_OP_LOGGER.isEnabled).toBe(false);
         });
