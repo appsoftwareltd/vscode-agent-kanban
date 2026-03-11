@@ -11,11 +11,6 @@ Thumbs.db
 # Publish package files
 *.vsix
 
-# Agent files
-
-AGENTS.md
-.agentkanban/
-
 # Developer tooling
 
 .devtool/
