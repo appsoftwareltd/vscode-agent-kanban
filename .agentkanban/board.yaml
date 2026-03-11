@@ -6,3 +6,5 @@ lanes:
 basePrompt: ""
 users:
   - Gareth
+labels:
+  - easy
