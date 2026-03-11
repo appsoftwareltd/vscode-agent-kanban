@@ -5,6 +5,7 @@ import { KanbanEditorPanel } from './KanbanEditorPanel';
 import { TaskStore } from './TaskStore';
 import { BoardConfigStore } from './BoardConfigStore';
 import { ChatParticipant } from './agents/ChatParticipant';
+import { WorktreeService } from './WorktreeService';
 import { LogService, NO_OP_LOGGER } from './LogService';
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
@@ -41,6 +42,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
     const taskStore = new TaskStore(workspaceFolder.uri, logger);
     const boardConfigStore = new BoardConfigStore(workspaceFolder.uri, logger);
+    const worktreeService = new WorktreeService(workspaceFolder.uri, logger);
 
     const chatParticipantHandler = new ChatParticipant(
         taskStore,
@@ -48,6 +50,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         context.extensionUri,
         () => isInitialised,
         logger,
+        worktreeService,
     );
 
     const boardViewProvider = new BoardViewProvider(
@@ -69,20 +72,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     context.subscriptions.push(
         vscode.window.registerWebviewPanelSerializer(KanbanEditorPanel.VIEW_TYPE, {
             async deserializeWebviewPanel(panel: vscode.WebviewPanel) {
-                KanbanEditorPanel.revive(panel, context.extensionUri, taskStore, boardConfigStore, logger, isInitialised);
+                KanbanEditorPanel.revive(panel, context.extensionUri, taskStore, boardConfigStore, logger, isInitialised, worktreeService);
             },
         }),
     );
 
     context.subscriptions.push(
         vscode.commands.registerCommand('agentKanban.openBoard', () => {
-            KanbanEditorPanel.createOrShow(context.extensionUri, taskStore, boardConfigStore, logger, isInitialised);
+            KanbanEditorPanel.createOrShow(context.extensionUri, taskStore, boardConfigStore, logger, isInitialised, worktreeService);
         }),
     );
 
     context.subscriptions.push(
         vscode.commands.registerCommand('agentKanban.newTask', () => {
-            KanbanEditorPanel.createOrShow(context.extensionUri, taskStore, boardConfigStore, logger, isInitialised);
+            KanbanEditorPanel.createOrShow(context.extensionUri, taskStore, boardConfigStore, logger, isInitialised, worktreeService);
             KanbanEditorPanel.currentPanel?.triggerCreateModal();
         }),
     );
@@ -127,7 +130,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         boardViewProvider.setInitialised(true);
         KanbanEditorPanel.currentPanel?.setInitialised(true);
         await runHousekeeping();
-        await ensureActivityBarFocusMode();
         logger.info('extension', 'Workspace initialised');
     };
 
@@ -195,8 +197,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         await taskStore.init();
         await chatParticipantHandler.syncInstructionFile();
         await chatParticipantHandler.syncAgentsMdSection();
+        // If this workspace is a task worktree, sync the enhanced sentinel
+        await chatParticipantHandler.syncWorktreeAgentsMd();
+        // Clean up stale worktree metadata (worktree path no longer exists)
+        await cleanStaleWorktreeMetadata(taskStore, worktreeService, logger);
         await runHousekeeping();
-        await ensureActivityBarFocusMode();
         const housekeepingInterval = setInterval(runHousekeeping, 10 * 60 * 1000);
         context.subscriptions.push({ dispose: () => clearInterval(housekeepingInterval) });
     }
@@ -211,20 +216,21 @@ export function deactivate(): void {
 }
 
 /**
- * Sets `workbench.activityBar.iconClickBehavior` to `"focus"` at workspace scope
- * so that clicking the already-active Activity Bar icon focuses the view rather
- * than toggling (collapsing) it. VS Code writes this into `.vscode/settings.json`,
- * creating the file if it doesn't exist, without disturbing other settings.
+ * Check all tasks for stale worktree metadata (worktree path no longer exists)
+ * and clear the worktree field. Runs once on activation.
  */
-async function ensureActivityBarFocusMode(): Promise<void> {
-    const cfg = vscode.workspace.getConfiguration();
-    const current = cfg.inspect<string>('workbench.activityBar.iconClickBehavior');
-    // Only write if the workspace-level value isn't already 'focus'
-    if (current?.workspaceValue !== 'focus') {
-        await cfg.update(
-            'workbench.activityBar.iconClickBehavior',
-            'focus',
-            vscode.ConfigurationTarget.Workspace,
-        );
+async function cleanStaleWorktreeMetadata(
+    taskStore: TaskStore,
+    worktreeService: WorktreeService,
+    logger: LogService,
+): Promise<void> {
+    const tasks = taskStore.getAll().filter(t => t.worktree);
+    for (const task of tasks) {
+        const exists = await worktreeService.exists(task.worktree!.path);
+        if (!exists) {
+            logger.info('extension', `Clearing stale worktree metadata for task ${task.id}`);
+            task.worktree = undefined;
+            await taskStore.save(task);
+        }
     }
 }

@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import type { TaskStore } from './TaskStore';
 import type { BoardConfigStore } from './BoardConfigStore';
+import type { WorktreeService } from './WorktreeService';
 import type { LogService } from './LogService';
 import { NO_OP_LOGGER } from './LogService';
 import { isProtectedLane, isReservedLane, slugifyLane, PROTECTED_LANES } from './types';
@@ -12,6 +13,7 @@ export class KanbanEditorPanel {
 
     private readonly _panel: vscode.WebviewPanel;
     private readonly _logger: LogService;
+    private readonly _worktreeService: WorktreeService | undefined;
     private _disposables: vscode.Disposable[] = [];
     private _webviewReady = false;
     private _pendingMessages: unknown[] = [];
@@ -26,6 +28,7 @@ export class KanbanEditorPanel {
         boardConfigStore: BoardConfigStore,
         logger?: LogService,
         isInitialised = true,
+        worktreeService?: WorktreeService,
     ): KanbanEditorPanel {
         const column =
             vscode.window.activeTextEditor?.viewColumn ?? vscode.ViewColumn.One;
@@ -60,6 +63,7 @@ export class KanbanEditorPanel {
             boardConfigStore,
             logger,
             isInitialised,
+            worktreeService,
         );
         return KanbanEditorPanel.currentPanel;
     }
@@ -72,6 +76,7 @@ export class KanbanEditorPanel {
         boardConfigStore: BoardConfigStore,
         logger?: LogService,
         isInitialised = true,
+        worktreeService?: WorktreeService,
     ): void {
         KanbanEditorPanel.currentPanel = new KanbanEditorPanel(
             panel,
@@ -80,6 +85,7 @@ export class KanbanEditorPanel {
             boardConfigStore,
             logger,
             isInitialised,
+            worktreeService,
         );
     }
 
@@ -113,10 +119,12 @@ export class KanbanEditorPanel {
         private readonly _boardConfigStore: BoardConfigStore,
         logger?: LogService,
         isInitialised = true,
+        worktreeService?: WorktreeService,
     ) {
         this._panel = panel;
         this._logger = logger ?? NO_OP_LOGGER;
         this._isInitialised = isInitialised;
+        this._worktreeService = worktreeService;
 
         // Enforce options (important when reviving a deserialized panel)
         this._panel.webview.options = {
@@ -228,6 +236,10 @@ export class KanbanEditorPanel {
                     }
                     if (oldLane !== newLane) {
                         await this._taskStore.moveTaskToLane(message.taskId, newLane);
+                        // Prompt for worktree removal when moving to done/archive
+                        if ((newLane === 'done' || newLane === 'archive') && task.worktree) {
+                            this._promptWorktreeRemoval(task);
+                        }
                     } else {
                         await this._taskStore.save(task);
                     }
@@ -463,11 +475,84 @@ export class KanbanEditorPanel {
             case 'archiveTask': {
                 const task = this._taskStore.get(message.taskId);
                 if (task) {
+                    const hadWorktree = task.worktree;
                     await this._taskStore.moveTaskToLane(message.taskId, 'archive');
+                    if (hadWorktree) {
+                        this._promptWorktreeRemoval(task);
+                    }
+                }
+                break;
+            }
+
+            case 'createWorktree': {
+                if (!this._worktreeService) { break; }
+                const task = this._taskStore.get(message.taskId);
+                if (!task) { break; }
+                try {
+                    const taskUri = this._taskStore.getTaskUri(task.id);
+                    const taskRelPath = vscode.workspace.asRelativePath(taskUri);
+                    const worktreeInfo = await this._worktreeService.create(task.id, task.title, taskRelPath);
+                    task.worktree = worktreeInfo;
+                    await this._taskStore.save(task);
+                    await this._worktreeService.openInVSCode(worktreeInfo.path);
+                } catch (err: any) {
+                    vscode.window.showErrorMessage(`Failed to create worktree: ${err.message}`);
+                }
+                break;
+            }
+
+            case 'openWorktree': {
+                if (!this._worktreeService) { break; }
+                const task = this._taskStore.get(message.taskId);
+                if (!task?.worktree) { break; }
+                const exists = await this._worktreeService.exists(task.worktree.path);
+                if (exists) {
+                    await this._worktreeService.openInVSCode(task.worktree.path);
+                } else {
+                    vscode.window.showWarningMessage('Worktree directory no longer exists.');
+                    task.worktree = undefined;
+                    await this._taskStore.save(task);
                 }
                 break;
             }
         }
+    }
+
+    // ── Worktree removal prompt ────────────────────────────────────────────
+
+    /**
+     * Non-blocking prompt to remove a task's worktree when moving to done/archive.
+     * The lane move has already happened — this is best-effort cleanup.
+     */
+    private _promptWorktreeRemoval(task: import('./types').Task): void {
+        if (!this._worktreeService || !task.worktree) { return; }
+
+        const worktreePath = task.worktree.path;
+
+        // Fire-and-forget — doesn't block the lane move
+        this._worktreeService.exists(worktreePath).then(async (exists) => {
+            if (!exists) {
+                // Stale metadata — silently clear
+                task.worktree = undefined;
+                await this._taskStore.save(task);
+                return;
+            }
+
+            const answer = await vscode.window.showInformationMessage(
+                `Task "${task.title}" has a git worktree at ${worktreePath}. Remove it?`,
+                'Yes', 'No',
+            );
+
+            if (answer === 'Yes') {
+                try {
+                    await this._worktreeService!.remove(task.worktree!);
+                    task.worktree = undefined;
+                    await this._taskStore.save(task);
+                } catch (err: any) {
+                    vscode.window.showErrorMessage(`Failed to remove worktree: ${err.message}`);
+                }
+            }
+        });
     }
 
     // ── Disposal ─────────────────────────────────────────────────────────────

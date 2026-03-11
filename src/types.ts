@@ -1,5 +1,11 @@
 export type Priority = 'critical' | 'high' | 'medium' | 'low' | 'none';
 
+export interface WorktreeInfo {
+    branch: string;
+    path: string;
+    created: string;
+}
+
 export interface Task {
     id: string;
     title: string;
@@ -12,6 +18,8 @@ export interface Task {
     labels?: string[];
     dueDate?: string;
     sortOrder?: number;
+    worktree?: WorktreeInfo;
+    slug?: string;
 }
 
 export interface BoardConfig {

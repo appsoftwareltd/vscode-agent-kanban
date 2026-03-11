@@ -68,6 +68,8 @@ function formatIsoToDate(iso: string): string {
 const ICON_CLOCK = '<svg class="inline-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="6.25"/><path d="M8 4.5V8l2.5 1.5"/></svg>';
 const ICON_ARCHIVE = '<svg class="inline-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 4h12v2H2z"/><path d="M3 6v7a1 1 0 001 1h8a1 1 0 001-1V6"/><path d="M6.5 9h3"/></svg>';
 const ICON_CALENDAR = '<svg class="inline-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="12" height="11" rx="1"/><path d="M5 1v3M11 1v3M2 7h12"/></svg>';
+const ICON_BRANCH = '<svg class="inline-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="4" r="2"/><circle cx="5" cy="12" r="2"/><circle cx="11" cy="6" r="2"/><path d="M5 6v4M9.2 5L7 7"/></svg>';
+const ICON_BRANCH_ADD = '<svg class="inline-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="4" cy="4" r="2"/><circle cx="4" cy="12" r="2"/><path d="M4 6v4"/><path d="M10 7v4M8 9h4"/></svg>';
 
 function isOverdue(isoDate: string): boolean {
     const today = new Date();
@@ -292,7 +294,13 @@ function buildCardHtml(task: Task): string {
         }
             <div class="card-footer">
                 <div class="card-date">${formatIsoToDate(task.updated)}</div>
-                <button class="icon-btn card-archive" data-archive-task-id="${esc(task.id)}" title="Archive task">${ICON_ARCHIVE}</button>
+                <div class="card-footer-actions">
+                    ${task.worktree
+            ? `<button class="icon-btn card-worktree-open" data-worktree-open-task-id="${esc(task.id)}" title="Open worktree">${ICON_BRANCH}</button>`
+            : `<button class="icon-btn card-worktree-create" data-worktree-create-task-id="${esc(task.id)}" title="Create worktree">${ICON_BRANCH_ADD}</button>`
+        }
+                    <button class="icon-btn card-archive" data-archive-task-id="${esc(task.id)}" title="Archive task">${ICON_ARCHIVE}</button>
+                </div>
             </div>
         </div>
     `;
@@ -503,6 +511,20 @@ function handleClick(e: MouseEvent): void {
         return;
     }
 
+    const worktreeCreateBtn = t.closest('[data-worktree-create-task-id]') as HTMLElement | null;
+    if (worktreeCreateBtn) {
+        e.stopPropagation();
+        vscode.postMessage({ type: 'createWorktree', taskId: worktreeCreateBtn.dataset.worktreeCreateTaskId });
+        return;
+    }
+
+    const worktreeOpenBtn = t.closest('[data-worktree-open-task-id]') as HTMLElement | null;
+    if (worktreeOpenBtn) {
+        e.stopPropagation();
+        vscode.postMessage({ type: 'openWorktree', taskId: worktreeOpenBtn.dataset.worktreeOpenTaskId });
+        return;
+    }
+
     const deleteBtn = t.closest('[data-delete-task-id]') as HTMLElement | null;
     if (deleteBtn) {
         e.stopPropagation();
@@ -524,7 +546,7 @@ function handleClick(e: MouseEvent): void {
     }
 
     const card = t.closest('.card[data-task-id]') as HTMLElement | null;
-    if (card && !t.closest('[data-delete-task-id]') && !t.closest('[data-archive-task-id]')) {
+    if (card && !t.closest('[data-delete-task-id]') && !t.closest('[data-archive-task-id]') && !t.closest('[data-worktree-create-task-id]') && !t.closest('[data-worktree-open-task-id]')) {
         openModal(card.dataset.taskId!);
         return;
     }

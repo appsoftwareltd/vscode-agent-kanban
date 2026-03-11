@@ -75,6 +75,28 @@
                     "default": "",
                     "description": "Path to a custom instruction file injected into the /task workflow. Standard agent files (AGENTS.md, copilot-instructions.md, etc.) are unaffected and continue to work as normal. Relative paths resolve from the workspace root.",
                     "scope": "resource"
+                },
+                "agentKanban.worktreeRoot": {
+                    "type": "string",
+                    "default": "../{repo}-worktrees",
+                    "description": "Root directory for task worktrees. Use {repo} as a placeholder for the repository name. Relative paths resolve from the workspace root.",
+                    "scope": "resource"
+                },
+                "agentKanban.worktreeOpenBehavior": {
+                    "type": "string",
+                    "enum": [
+                        "current",
+                        "new"
+                    ],
+                    "default": "current",
+                    "description": "Whether to open worktrees in the current window or a new window.",
+                    "scope": "resource"
+                },
+                "agentKanban.enforceWorktrees": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Require a git worktree before using /refresh. When enabled, the command prompts to create a worktree if one doesn't exist.",
+                    "scope": "resource"
                 }
             }
         },
@@ -95,16 +117,12 @@
                         "description": "<task name>"
                     },
                     {
-                        "name": "plan",
-                        "description": "Plan the selected task (refreshes context)"
+                        "name": "refresh",
+                        "description": "Re-inject agent context for the selected task"
                     },
                     {
-                        "name": "todo",
-                        "description": "Generate TODOs for the selected task (refreshes context)"
-                    },
-                    {
-                        "name": "implement",
-                        "description": "Implement the selected task (refreshes context)"
+                        "name": "worktree",
+                        "description": "Create, open, or remove a git worktree for the selected task"
                     }
                 ]
             }
