@@ -127,6 +127,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         boardViewProvider.setInitialised(true);
         KanbanEditorPanel.currentPanel?.setInitialised(true);
         await runHousekeeping();
+        await ensureActivityBarFocusMode();
         logger.info('extension', 'Workspace initialised');
     };
 
@@ -195,6 +196,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         await chatParticipantHandler.syncInstructionFile();
         await chatParticipantHandler.syncAgentsMdSection();
         await runHousekeeping();
+        await ensureActivityBarFocusMode();
         const housekeepingInterval = setInterval(runHousekeeping, 10 * 60 * 1000);
         context.subscriptions.push({ dispose: () => clearInterval(housekeepingInterval) });
     }
@@ -206,4 +208,23 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
 export function deactivate(): void {
     // nothing to clean up
+}
+
+/**
+ * Sets `workbench.activityBar.iconClickBehavior` to `"focus"` at workspace scope
+ * so that clicking the already-active Activity Bar icon focuses the view rather
+ * than toggling (collapsing) it. VS Code writes this into `.vscode/settings.json`,
+ * creating the file if it doesn't exist, without disturbing other settings.
+ */
+async function ensureActivityBarFocusMode(): Promise<void> {
+    const cfg = vscode.workspace.getConfiguration();
+    const current = cfg.inspect<string>('workbench.activityBar.iconClickBehavior');
+    // Only write if the workspace-level value isn't already 'focus'
+    if (current?.workspaceValue !== 'focus') {
+        await cfg.update(
+            'workbench.activityBar.iconClickBehavior',
+            'focus',
+            vscode.ConfigurationTarget.Workspace,
+        );
+    }
 }

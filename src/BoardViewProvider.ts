@@ -28,6 +28,9 @@ export class BoardViewProvider implements vscode.WebviewViewProvider {
     setInitialised(flag: boolean): void {
         this._isInitialised = flag;
         this.refresh();
+        if (flag) {
+            vscode.commands.executeCommand('agentKanban.openBoard');
+        }
     }
 
     resolveWebviewView(
@@ -47,11 +50,31 @@ export class BoardViewProvider implements vscode.WebviewViewProvider {
                 await vscode.commands.executeCommand('agentKanban.newTask');
             } else if (message.type === 'initialise') {
                 await vscode.commands.executeCommand('agentKanban.initialise');
+            } else if (message.type === 'focusSidebar') {
+                if (this._isInitialised) {
+                    await vscode.commands.executeCommand('agentKanban.openBoard');
+                }
+            }
+        });
+
+        // Auto-open the editor panel whenever the sidebar becomes visible.
+        // resolveWebviewView fires once (first reveal); onDidChangeVisibility covers
+        // subsequent Activity Bar clicks that bring the sidebar back into view.
+        const openBoardIfInitialised = () => {
+            if (this._isInitialised) {
+                vscode.commands.executeCommand('agentKanban.openBoard');
+            }
+        };
+
+        webviewView.onDidChangeVisibility(() => {
+            if (webviewView.visible) {
+                openBoardIfInitialised();
             }
         });
 
         this._logger.info('boardView', 'Sidebar webview resolved');
         this.refresh();
+        openBoardIfInitialised();
     }
 
     refresh(): void {
@@ -180,7 +203,6 @@ export class BoardViewProvider implements vscode.WebviewViewProvider {
 </head>
 <body>
     <div class="actions">
-        <button class="btn" id="btn-open"><svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="1" y="2" width="3" height="10" rx="0.5" fill="currentColor"/><rect x="5.5" y="2" width="3" height="7" rx="0.5" fill="currentColor"/><rect x="10" y="2" width="3" height="9" rx="0.5" fill="currentColor"/></svg>Open Board</button>
         <button class="btn btn-sec" id="btn-new">+ New Task</button>
     </div>
     <div class="summary">${totalActive} active task${totalActive !== 1 ? 's' : ''}</div>
@@ -188,8 +210,10 @@ export class BoardViewProvider implements vscode.WebviewViewProvider {
     <div class="lanes">${lanesHtml}</div>
     <script nonce="${nonce}">
         const vscode = acquireVsCodeApi();
-        document.getElementById('btn-open').addEventListener('click', () => vscode.postMessage({ type: 'openBoard' }));
         document.getElementById('btn-new').addEventListener('click', () => vscode.postMessage({ type: 'newTask' }));
+        // When focus shifts to this sidebar (e.g. Activity Bar icon click in "focus" mode),
+        // re-open the board editor panel so it is always shown alongside the sidebar.
+        window.addEventListener('focus', () => vscode.postMessage({ type: 'focusSidebar' }));
     </script>
 </body>
 </html>`;
