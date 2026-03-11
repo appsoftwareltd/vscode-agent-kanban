@@ -2,6 +2,10 @@
 
 All notable changes to AS Notes will be documented here.
 
+## [1.0.3] - 2026-03-11
+
+- Fix side bar / board focus behaviour
+
 ## [1.0.3] - 2026-03-10
 
 - Bugfix: Agent should not initialise workspace automatically - requires user action.

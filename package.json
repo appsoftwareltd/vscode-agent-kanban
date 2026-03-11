@@ -2,7 +2,7 @@
     "name": "vscode-agent-kanban",
     "displayName": "VS Code Agent Kanban",
     "description": "An integrated Kanban board for managing coding agent tasks with persistent, version-controllable markdown conversations.",
-    "version": "1.0.3",
+    "version": "1.0.4",
     "publisher": "appsoftwareltd",
     "license": "Elastic-2.0",
     "icon": "images/icon.png",
