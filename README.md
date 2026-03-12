@@ -14,7 +14,7 @@ Agent Kanban references its own instruction set, so it doesn't interfere with yo
 
 ![VS Code Agent Kanban](https://github.com/appsoftwareltd/vscode-agent-kanban/blob/main/images/icon.png?raw=true)
 
-[Youtube (Quick Demo)](https://www.youtube.com/watch?v=Y4a3FnFftKw) (Note that the image below shows the updated UI, the video needs an update but illustrates the workflow)
+[Youtube (Quick Demo)](https://www.youtube.com/watch?v=Y4a3FnFftKw) (Note (2026-03-12) that the video and image need updating for recent releases, but have retained for now as a basic illustration of the key ideas)
 
 <img width="1042" height="632" alt="image" src="https://github.com/user-attachments/assets/19bfc5ac-1ed2-4c10-bc5e-8338fbb95922" />
 
@@ -32,11 +32,11 @@ Agent Kanban references its own instruction set, so it doesn't interfere with yo
 1. Install the extension and click the Kanban icon in the Activity Bar
 2. Click **+ New Task** (or `@kanban /new My Task` in chat)
 3. Use `@kanban /task My Task` to select a task — opens the task file and sets up context
-4. Type **go** in agent mode to begin working — the agent reads the task file and follows the workflow
+4. In agent mode, type **plan**, **todo**, **implement** (or a combination) to begin — the agent reads the task file and follows the iterative workflow
 5. Use `@kanban /refresh` any time the agent loses track, to re-inject context
 6. The task file accumulates the full conversation — edit it directly to steer the agent or add context
 7. Drag cards between lanes as work progresses
-8. *(Optional)* Use `@kanban /worktree` to create an isolated git worktree for the task — the agent gets its own branch and working directory (see [Git Worktrees](#git-worktrees))
+8. *(Optional)* For larger tasks, use `@kanban /worktree` to give the agent its own branch and working directory — it can make sweeping changes without touching your main workspace (see [Git Worktrees](#git-worktrees))
 
 ## Chat Commands
 
@@ -59,7 +59,9 @@ Agent Kanban uses a layered approach to keep the agent on track, even in long co
 
 1. **AGENTS.md managed section** — On activation and every command, Agent Kanban writes a small sentinel-delimited section into `AGENTS.md` at the workspace root. VS Code re-injects AGENTS.md into the system prompt on **every agent mode turn**, so the agent always knows to read `INSTRUCTION.md` and `memory.md`. User content outside the sentinel markers (`<!-- BEGIN/END AGENT KANBAN -->`) is never modified.
 
-2. **`response.reference()`** — Each `/task` and `/refresh` command attaches the INSTRUCTION.md and task file URIs to the chat response. This gives the agent a direct, per-thread reference to the active files.
+2. **Per-thread context** — Two mechanisms depending on the workflow:
+   - **a) `response.reference()`** (main workspace) — Each `/task` and `/refresh` command attaches the INSTRUCTION.md and task file URIs to the chat response, giving the agent a direct, per-thread reference to the active files.
+   - **b) Task-specific AGENTS.md sentinel** (worktree) — In worktree workspaces, the AGENTS.md sentinel names the exact task file (`**Active Task:**`, `**Task File:**`), so the agent knows which task to work on from the system prompt alone — no per-thread setup needed.
 
 3. **`/refresh` command** — On-demand context refresh. Re-syncs INSTRUCTION.md, updates the AGENTS.md section, and re-references the task file. Use this when the agent drifts in a long conversation.
 
@@ -73,6 +75,8 @@ Agent Kanban uses a layered approach to keep the agent on track, even in long co
 
 In long Copilot chat conversations, earlier messages gradually scroll out of the model's context window. A single one-shot instruction injection (e.g. "read INSTRUCTION.md") works initially but the agent eventually forgets the workflow rules (context decay). We explored several mechanisms in isolation — `response.reference()`, `.instructions.md` with `applyTo` globs, MCP tool calls — and found that none completely solved the problem alone. Of these, `AGENTS.md` is the strongest because VS Code re-injects it at the system-prompt level on every agent turn — it never decays. The other layers (per-thread references, `/refresh` command, open editor tabs) provide complementary safety nets, giving the agent multiple independent paths back to the workflow rules and the active task file.
 
+The worktree approach takes this further: because the worktree's AGENTS.md names the exact task file, the agent receives task-specific context on every turn — not just generic "read INSTRUCTION.md" pointers. This makes context recovery essentially automatic, without relying on per-thread references or manual `/refresh` commands.
+
 ## Two Workflows
 
 Agent Kanban supports two ways of working, depending on whether you want to stay in your main workspace or give the agent a fully isolated environment.
@@ -82,7 +86,7 @@ Agent Kanban supports two ways of working, depending on whether you want to stay
 This is the default. You work directly in your main workspace:
 
 1. `@kanban /task My Task` — select the task
-2. Type **go** in agent mode to begin — the agent reads the task file and follows the workflow
+2. In agent mode, type **plan**, **todo**, **implement** (or a combination) to begin — the agent reads the task file and follows the iterative workflow
 3. Use `@kanban /refresh` any time the agent loses track — it re-injects context
 
 This works well for small-to-medium tasks where you're comfortable with the agent editing files directly in your working tree.
@@ -95,7 +99,7 @@ For larger or riskier tasks, create a **git worktree** so the agent works on its
 2. Optionally plan and discuss in the task file first
 3. `@kanban /worktree` — create the worktree (or click the branch icon on the Kanban card)
 4. VS Code opens the worktree folder. The agent already knows which task file to read because AGENTS.md in the worktree contains a task-specific sentinel.
-5. Use `@kanban /refresh` to re-inject context if the agent drifts
+5. In agent mode, type **plan**, **todo**, **implement** (or a combination) to begin. Commands like `/task` and `/refresh` auto-detect the linked task in worktree workspaces, so you don't need to re-select the task.
 6. When done, merge the worktree branch back into your main branch via your normal git workflow.
 
 ### Why two workflows?
@@ -110,11 +114,12 @@ Both workflows share the same underlying context-injection mechanism (AGENTS.md 
 
 When you run `@kanban /worktree` (or click the branch icon on a Kanban card), Agent Kanban:
 
-1. **Auto-commits** any uncommitted `.agentkanban/` files so the worktree has the latest task data
-2. **Creates a new branch** `agentkanban/<task-slug>` and a worktree directory
+1. **Auto-commits** the task file (and its todo sibling, if any) so the worktree has the latest task data
+2. **Creates a new branch** `agentkanban/<task-slug>` and a worktree directory, pinned to the exact commit containing the task data
 3. **Writes a task-specific AGENTS.md** into the worktree — this tells the agent exactly which task file to read, so it starts with full context without any manual setup
-4. **Sets `--skip-worktree`** on AGENTS.md so the worktree's version stays independent from the main branch (changes to AGENTS.md in the worktree won't pollute commits)
-5. **Opens the worktree** in VS Code
+4. **Copies the task file** (with worktree metadata) into the worktree so the extension can detect the association when it activates there
+5. **Sets `--skip-worktree`** on AGENTS.md so the worktree's version stays independent from the main branch (changes to AGENTS.md in the worktree won't pollute commits)
+6. **Opens the worktree** in VS Code
 
 ### Managing worktrees
 
@@ -137,6 +142,16 @@ title: Implement OAuth2
 created: 2026-03-08T10:00:00.000Z
 updated: 2026-03-08T14:30:00.000Z
 description: OAuth2 integration for the API
+priority: high
+assignee: alice
+labels:
+  - backend
+  - auth
+dueDate: 2026-03-15
+worktree:
+  branch: agentkanban/task_20260308_143045123_abc123_implement_oauth2
+  path: /home/alice/projects/myrepo-worktrees/task_20260308_143045123_abc123_implement_oauth2
+  created: 2026-03-08T14:35:00.000Z
 ---
 
 ## Conversation
@@ -147,6 +162,8 @@ description: OAuth2 integration for the API
 ```
 
 The lane a task belongs to is determined by its directory (e.g. `tasks/doing/`), not by a frontmatter field.
+
+Optional frontmatter fields: `description`, `priority` (critical/high/medium/low/none), `assignee`, `labels`, `dueDate`, `sortOrder`, `worktree` (auto-managed by the extension).
 
 ## Storage
 
@@ -176,6 +193,7 @@ Tasks are stored in subdirectories matching their lane slug. Moving a task betwe
 |---------|-------|-------------|
 | `agentKanban.enableLogging` | Window | Enable diagnostic logging to `.agentkanban/logs/`. Requires reload. |
 | `agentKanban.customInstructionFile` | Resource | Path to a custom instruction file injected into the `/task` workflow. Relative paths resolve from workspace root. |
+| `agentKanban.enforceWorktrees` | Resource | Require a git worktree before using `/refresh`. Prompts to create a worktree if one doesn't exist. |
 
 ## Development
 
@@ -204,8 +222,8 @@ npx @vscode/vsce publish
 
 # 3. Tag and push
 git add .
-git commit -m "Release v1.0.5"
-git tag v1.0.5
+git commit -m "Release v2.0.0"
+git tag v2.0.0
 git push origin main --tags
 ```
 

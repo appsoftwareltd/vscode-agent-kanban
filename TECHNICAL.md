@@ -5,11 +5,13 @@
 ```
 src/
 ├── extension.ts              # Extension entry point — activation, registration
-├── types.ts                  # Core type definitions (Task, BoardConfig)
+├── types.ts                  # Core type definitions (Task, BoardConfig, WorktreeInfo)
 ├── LogService.ts             # Pure Node.js rolling file logger
 ├── TaskStore.ts              # Markdown task file read/write/watch (YAML frontmatter)
 ├── BoardConfigStore.ts       # Board configuration persistence
 ├── BoardViewProvider.ts      # Sidebar webview — kanban board UI
+├── KanbanEditorPanel.ts      # Full editor panel — kanban board with worktree support
+├── WorktreeService.ts        # Git worktree lifecycle management
 ├── agents/
 │   └── ChatParticipant.ts    # Lightweight @kanban chat command router
 └── test/
@@ -17,10 +19,27 @@ src/
     ├── LogService.test.ts    # Log writing, rotation, no-op tests
     ├── TaskStore.test.ts     # Frontmatter round-trip, slug, ID, findByTitle tests
     ├── BoardConfigStore.test.ts # Board config serialisation tests
-    └── ChatParticipant.test.ts  # Command routing, task resolution, action tests
+    ├── ChatParticipant.test.ts  # Command routing, task resolution, worktree tests
+    └── WorktreeService.test.ts  # Worktree creation, removal, git operations
 ```
 
 ## Core Types
+
+### Priority (`types.ts`)
+
+```typescript
+type Priority = 'critical' | 'high' | 'medium' | 'low' | 'none';
+```
+
+### WorktreeInfo (`types.ts`)
+
+```typescript
+interface WorktreeInfo {
+    branch: string;       // e.g. agentkanban/task_20260308_143045123_abc123_my_task
+    path: string;         // Absolute path to worktree directory
+    created: string;      // ISO 8601 timestamp
+}
+```
 
 ### Task (`types.ts`)
 
@@ -32,6 +51,13 @@ interface Task {
     created: string;      // ISO 8601 timestamp
     updated: string;      // ISO 8601 timestamp (auto-updated on save)
     description: string;
+    priority?: Priority;
+    assignee?: string;
+    labels?: string[];
+    dueDate?: string;
+    sortOrder?: number;
+    worktree?: WorktreeInfo;
+    slug?: string;
 }
 ```
 
@@ -111,7 +137,7 @@ description: OAuth2 integration for the API
 [agent] Here's my analysis...
 ```
 
-Frontmatter fields: `title` (required), `created`, `updated`, `description` (omitted if empty). Optional metadata: `priority`, `assignee`, `labels`, `dueDate`, `sortOrder`.
+Frontmatter fields: `title` (required), `created`, `updated`, `description` (omitted if empty). Optional metadata: `priority`, `assignee`, `labels`, `dueDate`, `sortOrder`, `worktree` (auto-managed by the extension — `branch`, `path`, `created`), `slug`.
 
 **Note**: `lane` is NOT stored in frontmatter — the lane is determined by which subdirectory the file lives in.
 
@@ -179,31 +205,33 @@ Lightweight `@kanban` chat participant that routes commands to task markdown fil
 |---------|---------|-------------|
 | `/new` | `handleNew()` | Creates a new task file, reports its path |
 | `/task` | `handleTask()` | Selects a task, opens file in editor, outputs context |
-| `/plan` | `handleVerb()` | Re-injects context and starts planning for the selected task |
-| `/todo` | `handleVerb()` | Re-injects context and generates TODOs for the selected task |
-| `/implement` | `handleVerb()` | Re-injects context and starts implementation for the selected task |
+| `/refresh` | `handleRefresh()` | Re-injects full workflow context for the selected task |
+| `/worktree` | `handleWorktree()` | Create, open, or remove a git worktree for the selected task |
 | (none) | default | Shows available commands |
 
 #### Task Resolution
 
 `resolveTaskFromPrompt(prompt)` matches the prompt against active (non-Done) task titles:
 
-1. **Exact prefix match** (case-insensitive) — prompt starts with task title
-2. **Contains match** — longest title found anywhere in prompt
-3. **Partial first-word match** — first word of prompt appears in a task title
+1. **Slug match** — exact slug, case-insensitive (highest priority)
+2. **Exact prefix match** (case-insensitive) — prompt starts with task title
+3. **Contains match** — longest title found anywhere in prompt
+4. **Alphanumeric fuzzy** — character-stripped comparison
+5. **Partial first-word match** — first word of prompt appears in a task title
 
 Returns `{ task, freeText }` where `freeText` is any remaining prompt after the matched title.
 
 #### /task Flow
 
-1. If no prompt: lists active tasks
-2. Resolve task from prompt via `resolveTaskFromPrompt()`
-3. Sync `.agentkanban/INSTRUCTION.md` and AGENTS.md managed section from bundled templates
-4. Set `lastSelectedTaskId` for verb followups
-5. Attach INSTRUCTION.md and task file as `response.reference()` URIs for persistent context
-6. Open the task file in the editor via `vscode.window.showTextDocument()`
-7. Output INSTRUCTION.md reference, custom instruction file reference (if configured), task title, task file path
-8. Guide user to use `@kanban /plan`, `/todo`, `/implement` verb commands to begin working
+1. If no prompt and in a worktree workspace: auto-detect linked task via `findLinkedWorktreeTask()`, show task name and `WORKTREE_WORKSPACE_HINT`
+2. If no prompt: list active tasks
+3. Resolve task from prompt via `resolveTaskFromPrompt()`
+4. Sync `.agentkanban/INSTRUCTION.md` and AGENTS.md managed section from bundled templates
+5. Set `lastSelectedTaskId` for followup commands
+6. Attach INSTRUCTION.md and task file as `response.reference()` URIs for persistent context
+7. Open the task file in the editor via `vscode.window.showTextDocument()`
+8. Output INSTRUCTION.md reference, custom instruction file reference (if configured), task title, task file path, worktree status
+9. Guide user to type **plan**, **todo**, **implement** (or a combination) to proceed
 
 ##### Custom Instruction File
 
@@ -211,26 +239,49 @@ When `agentKanban.customInstructionFile` is set, `handleTask()` resolves the pat
 
 #### /new Flow
 
-1. Clear `lastSelectedTaskId` (resets verb followups)
-2. Ensure `.agentkanban/INSTRUCTION.md` exists
-3. Create the task file
-4. Report path and suggest `@kanban /task <title>` to start working
+1. Clear `lastSelectedTaskId` (resets followups)
+2. Auto-initialise via `agentKanban.initialise` if workspace not yet set up
+3. Ensure `.agentkanban/INSTRUCTION.md` exists
+4. Create the task file
+5. Report path and suggest `@kanban /task <title>` to start working
 
-#### Verb Commands (/plan, /todo, /implement)
+#### /refresh Flow
 
-1. If `lastSelectedTaskId` is not set: lists active tasks and prompts user to run `/task` first
-2. Look up task from `lastSelectedTaskId`; if task is done/missing, clear selection and prompt re-selection
-3. Sync INSTRUCTION.md and AGENTS.md managed section
-4. Attach INSTRUCTION.md and task file as `response.reference()` URIs for persistent context
-5. Open the task file in editor
-6. Output: INSTRUCTION.md reference, verb label + task title, task file path, additional context (if any)
-7. Instruct agent to read the task file and perform the verb action
+1. If `lastSelectedTaskId` is not set: auto-detect linked task via `findLinkedWorktreeTask()` (worktree workspace support)
+2. If still no task: list active tasks and prompt user to run `/task` first
+3. Look up task; if done/missing, clear selection and prompt re-selection
+4. Check `enforceWorktrees` setting — block if enabled and no worktree exists
+5. Sync INSTRUCTION.md and AGENTS.md (uses worktree-enhanced sentinel if task has a worktree)
+6. Attach INSTRUCTION.md and task file as `response.reference()` URIs for persistent context
+7. Open the task file in editor (preserveFocus keeps cursor in chat input)
+8. Output: INSTRUCTION.md reference, **REFRESH** label + task title, task file path, worktree hint (if applicable), additional context
 
-**Verb combinations**: The prompt can contain `#plan`, `#todo`, `#implement` hash tags to combine verbs. E.g. `@kanban /todo #implement` runs both todo and implement. `parseVerbs(command, prompt)` extracts all verbs in canonical order (plan → todo → implement).
+#### /worktree Flow
+
+1. Verify git repository and `WorktreeService` availability
+2. If `lastSelectedTaskId` is not set: auto-detect linked task via `findLinkedWorktreeTask()`
+3. If still no task: prompt user to run `/task` first
+4. Route to subcommand handler based on prompt:
+   - `(empty)` → `handleWorktreeCreate()` — create worktree, save metadata, copy task file, open in VS Code
+   - `open` → `handleWorktreeOpen()` — reopen existing worktree, show `WORKTREE_WORKSPACE_HINT` if already in it
+   - `remove` → `handleWorktreeRemove()` — remove worktree + delete branch, clear metadata
+
+#### Worktree Auto-Detection
+
+`findLinkedWorktreeTask()` scans all tasks for one whose `worktree.path` matches the current workspace folder (normalised for Windows path comparison). This enables seamless task selection in worktree workspaces without requiring the user to re-select via `/task`.
+
+`isInTaskWorktree(task)` checks if the current workspace IS the worktree for a specific task.
+
+`WORKTREE_WORKSPACE_HINT` is a shared constant shown in worktree workspaces:
+> ℹ️ **Worktree workspace** — AGENTS.md permanently provides task context. You don't need these commands unless you use `/task` to switch tasks.
 
 ### Helper: `getActiveTaskTitles()`
 
 Returns titles of all non-Done tasks. Used in the default (no command) response to show available tasks.
+
+### Helper: `buildWorktreeAgentsMdSection()`
+
+Exported function that builds the enhanced AGENTS.md sentinel for worktree workspaces. Contains `**Active Task:**` and `**Task File:**` directives so the agent knows exactly which task file to read. Used by both `ChatParticipant.syncAgentsMdSection()` and `WorktreeService.writeWorktreeAgentsMd()`.
 
 ### INSTRUCTION.md — Agent Context Injection
 
@@ -240,15 +291,16 @@ The instruction file reference is injected into the chat response as: `Read .age
 
 ### AGENTS.md — Managed Section
 
-`syncAgentsMdSection()` manages a sentinel-delimited section in the workspace's `AGENTS.md`. VS Code re-injects `AGENTS.md` into the system prompt on **every agent mode turn**, making it the most reliable context injection mechanism.
+`syncAgentsMdSection(worktreeTask?)` manages a sentinel-delimited section in the workspace's `AGENTS.md`. VS Code re-injects `AGENTS.md` into the system prompt on **every agent mode turn**, making it the most reliable context injection mechanism.
 
 The section is delimited by `<!-- BEGIN AGENT KANBAN — DO NOT EDIT THIS SECTION -->` and `<!-- END AGENT KANBAN -->` sentinel comments. The method:
 
 1. Reads existing `AGENTS.md` (or starts with empty string if the file doesn't exist)
-2. Finds the sentinel block (if present) and replaces it, or appends the block at the end
-3. Writes the file back — user content outside the sentinels is never modified
+2. If called without `worktreeTask` and the existing sentinel contains `**Active Task:**`, preserves the worktree-enhanced sentinel (avoids downgrading)
+3. Finds the sentinel block (if present) and replaces it, or appends the block at the end
+4. Writes the file back — user content outside the sentinels is never modified
 
-Section content:
+**Standard sentinel** (main workspace):
 ```markdown
 <!-- BEGIN AGENT KANBAN — DO NOT EDIT THIS SECTION -->
 ## Agent Kanban
@@ -260,18 +312,34 @@ If a task file (`.agentkanban/tasks/**/*.md`) was referenced earlier in this con
 <!-- END AGENT KANBAN -->
 ```
 
-Called on activation and by every `/task` and verb command. This ensures:
+**Worktree-enhanced sentinel** (worktree workspace):
+```markdown
+<!-- BEGIN AGENT KANBAN — DO NOT EDIT THIS SECTION -->
+## Agent Kanban
+
+**Active Task:** Implement OAuth2
+**Task File:** `.agentkanban/tasks/doing/task_xxx.md`
+
+Read the task file above before responding.
+Read `.agentkanban/INSTRUCTION.md` for task workflow rules.
+Read `.agentkanban/memory.md` for project context.
+<!-- END AGENT KANBAN -->
+```
+
+Called on activation and by every command. This ensures:
 - The agent always knows INSTRUCTION.md and memory.md exist (every turn, all threads)
-- The section is task-agnostic — safe for multiple concurrent chat threads
+- In worktree workspaces, the sentinel names the exact task file — no manual selection needed
 - The "re-read task file" directive prompts the agent to actively recover its task context
 
-The layered approach combines AGENTS.md (system-prompt level, every turn), `response.reference()` (per-thread URIs), verb commands (on-demand refresh), and editor tabs (persistent while open) to eliminate context decay.
+`syncWorktreeAgentsMd()` is called on extension activation. It checks if the current workspace is a task worktree (via `findLinkedWorktreeTask()`) and writes the enhanced sentinel if so.
+
+The layered approach combines AGENTS.md (system-prompt level, every turn), `response.reference()` (per-thread URIs), `/refresh` command (on-demand refresh), and editor tabs (persistent while open) to eliminate context decay.
 
 ### Followup Provider
 
 `getFollowups()` provides context-aware suggestions:
 
-- **When a task is selected** (`lastSelectedTaskId` is set): Returns four verb command followups — Plan, Todo, Implement, Todo + Implement — each labelled with the selected task title. When clicked, these go through `handleVerb()` which re-injects full workflow context.
+- **When a task is selected** (`lastSelectedTaskId` is set): Returns a `/refresh` followup and a `/worktree` followup (create or open, depending on whether the task already has a worktree).
 - **Otherwise**: Returns a single `ChatFollowup` suggesting `/task` for the most recently updated active (non-Done) task.
 - If the selected task has been moved to Done or deleted, the selection is cleared and falls through to the `/task` suggestion.
 
@@ -284,21 +352,81 @@ Registered on the chat participant in `extension.ts` via `participant.followupPr
 ### Activation
 
 1. Resolve workspace folder
-2. Initialise logger (if `enableLogging` or `AGENT_KANBAN_DEBUG`)
-3. Create and init `TaskStore`, `BoardConfigStore`
-4. Register `BoardViewProvider` for sidebar
-5. Register `ChatParticipant` as `@kanban` with followup provider
-6. Register commands: `openTask`, `resetMemory`
-7. Create file watchers: `.agentkanban/tasks/**/*.md` (debounced 200ms, with directory reconciliation), `.agentkanban/tasks/*` (directory-level) and `.agentkanban/board.yaml`
-8. Run housekeeping reconciliation (sync assignees/labels from task frontmatter into board.yaml)
-9. Start 10-minute housekeeping interval for ongoing reconciliation
+2. Detect initialisation state (presence of `.agentkanban/board.yaml`) — prevents log directory creation on fresh workspaces
+3. Initialise logger (if `enableLogging` or `AGENT_KANBAN_DEBUG`, and workspace is initialised)
+4. Create and init `TaskStore`, `BoardConfigStore`, `WorktreeService`
+5. Register `BoardViewProvider` for sidebar
+6. Register `KanbanEditorPanel` serialiser and `openBoard`/`newTask` commands
+7. Register `ChatParticipant` as `@kanban` with followup provider
+8. Register commands: `openTask`, `resetMemory`, `initialise`
+9. Create file watchers: `.agentkanban/tasks/**/*.md` (debounced 200ms, with directory reconciliation), `.agentkanban/tasks/*` (directory-level) and `.agentkanban/board.yaml`
+10. If already initialised: load config/tasks, sync INSTRUCTION.md, sync AGENTS.md, sync worktree AGENTS.md (if in worktree workspace), clean stale worktree metadata, run housekeeping
+11. Start 10-minute housekeeping interval for ongoing reconciliation
 
 ### Commands
 
 | Command | Description |
 |---------|-------------|
+| `agentKanban.openBoard` | Opens the Kanban board editor panel |
+| `agentKanban.newTask` | Opens the board and triggers the create-task modal |
 | `agentKanban.openTask` | Opens a task's `.md` file in the editor |
 | `agentKanban.resetMemory` | Resets `.agentkanban/memory.md` to `# Memory\n` |
+| `agentKanban.initialise` | Full first-time setup — creates dirs, writes config & instruction files |
+
+### Stale Worktree Cleanup
+
+`cleanStaleWorktreeMetadata()` runs once on activation. Scans all tasks with `worktree` metadata and checks if the worktree directory still exists on disk. If not, clears the `worktree` field from the task frontmatter.
+
+## WorktreeService (`WorktreeService.ts`)
+
+Manages git worktree lifecycle for Agent Kanban tasks. Wraps `git worktree add`, `git worktree remove`, and related operations. All git commands run in the workspace root directory.
+
+### Key Methods
+
+| Method | Description |
+|--------|-------------|
+| `isGitRepo()` | Checks if the workspace is a git repository |
+| `getRepoName()` | Gets the repository name from the git root |
+| `create(taskId, taskTitle, taskRelPath?)` | Creates a worktree + branch, returns `WorktreeInfo` |
+| `remove(worktreeInfo)` | Removes worktree and deletes branch |
+| `list()` | Lists all active worktrees (parses `git worktree list --porcelain`) |
+| `exists(worktreePath)` | Checks if a worktree directory still exists on disk |
+| `openInVSCode(worktreePath)` | Opens worktree folder respecting `worktreeOpenBehavior` setting |
+| `autoCommitTaskFiles(taskTitle, taskRelPath?)` | Stages and commits task files, returns commit hash |
+| `writeWorktreeAgentsMd(worktreePath, taskTitle, taskRelPath)` | Writes enhanced AGENTS.md sentinel into worktree directory |
+| `getWorktreeRoot()` | Resolves configured root directory with `{repo}` placeholder |
+
+### Worktree Creation Flow
+
+1. **Auto-commit** — `autoCommitTaskFiles()` parses `git status --porcelain -uall` output, stages only actually-changed files, commits with descriptive message, returns commit hash. Verifies the task file exists in the commit.
+2. **Create worktree** — `git worktree add -b <branch> <path> <commit-hash>`. Commit-hash pinning ensures the worktree starts from the exact commit containing the task data (avoids race with other commits).
+3. **Set `--skip-worktree`** — `git update-index --skip-worktree AGENTS.md` so the worktree's AGENTS.md stays independent from the main branch.
+4. **Write AGENTS.md** — `writeWorktreeAgentsMd()` writes the enhanced sentinel into the worktree, using the same logic as `syncAgentsMdSection()`.
+
+### Configuration
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `agentKanban.worktreeRoot` | `../{repo}-worktrees` | Root directory for worktrees. `{repo}` is replaced with the repository name. |
+| `agentKanban.worktreeOpenBehavior` | `current` | Open worktree in `current` window or a `new` window. |
+| `agentKanban.enforceWorktrees` | `false` | Require a git worktree before using `/refresh`. |
+
+### Branch Naming
+
+All worktree branches use the `agentkanban/` prefix followed by the task slug (derived from the task ID, truncated and sanitised).
+
+## KanbanEditorPanel (`KanbanEditorPanel.ts`)
+
+Full editor panel providing the Kanban board UI with worktree support. Registered as a webview panel serialiser so it survives window reloads.
+
+### Worktree Integration
+
+The `createWorktree` message handler:
+
+1. Calls `WorktreeService.create()` to create the worktree
+2. Saves the task with `worktree` metadata
+3. Copies the updated task file (with worktree metadata) into the worktree directory so the extension can detect the association when it activates there
+4. Calls `WorktreeService.openInVSCode()` to open the worktree
 
 ## Build System
 
@@ -339,6 +467,7 @@ All services accept an optional `logger?: LogService` constructor parameter, def
 - `BoardConfigStore` — config loading/saving
 - `BoardViewProvider` — webview lifecycle, message handling
 - `ChatParticipant` — command routing, task resolution
+- `WorktreeService` — git worktree operations
 
 ### Tag Convention
 
@@ -349,6 +478,7 @@ All services accept an optional `logger?: LogService` constructor parameter, def
 | `boardConfig` | Board config operations |
 | `boardView` | Board webview events |
 | `chatParticipant` | Chat participant command handling |
+| `worktreeService` | Git worktree operations |
 
 ### Log Format
 
