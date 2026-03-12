@@ -2,6 +2,13 @@
 
 All notable changes to AS Notes will be documented here.
 
+## [2.0.0] - 2026-03-12
+
+- Major change to support Git worktree based workflows, leveraging VS Code support for Git worktrees
+- `/plan`, `/todo`, `/implement` `@kanban` participant commands are gone in favour of `/refresh` for non worktree based workflow
+- Automatic commit of tasks when creating Git worktrees (for availability in new worktree)
+- Documentation updated
+
 ## [1.0.5] - 2026-03-11
 
 - Bump esbuild version on dependabot alert

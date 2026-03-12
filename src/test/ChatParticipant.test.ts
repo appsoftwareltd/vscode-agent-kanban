@@ -45,7 +45,7 @@ describe('ChatParticipant', () => {
 
             expect(response.messages.length).toBeGreaterThan(0);
             expect(response.messages[0]).toContain('Available commands');
-            expect(response.messages[0]).toContain('/plan');
+            expect(response.messages[0]).toContain('/refresh');
         });
 
         it('should route /new command', async () => {
@@ -77,6 +77,32 @@ describe('ChatParticipant', () => {
             await participant.handleRequest(mockRequest('task', 'My Task'), {} as any, response, mockToken);
 
             expect(response.messages.some((m: string) => m.includes('My Task'))).toBe(true);
+        });
+
+        it('should route /refresh command to verb handler', async () => {
+            const task: Task = {
+                id: 'task_refresh_1', title: 'Refresh Task', lane: 'doing',
+                created: '2026-03-08T10:00:00.000Z', updated: '2026-03-08T10:00:00.000Z', description: '',
+            };
+            (taskStore as any).tasks.set(task.id, task);
+            participant.lastSelectedTaskId = task.id;
+
+            vi.spyOn(workspace.fs, 'readFile').mockResolvedValue(new TextEncoder().encode('# Template'));
+            vi.spyOn(workspace.fs, 'writeFile').mockResolvedValue(undefined);
+            vi.spyOn(workspace, 'openTextDocument').mockResolvedValue({} as any);
+            vi.spyOn(window, 'showTextDocument').mockResolvedValue(undefined as any);
+
+            const response = mockResponse();
+            await participant.handleRequest(mockRequest('refresh', ''), {} as any, response, mockToken);
+
+            expect(response.messages.some((m: string) => m.includes('REFRESH'))).toBe(true);
+            expect(response.messages.some((m: string) => m.includes('Refresh Task'))).toBe(true);
+        });
+
+        it('should include /refresh in help text', async () => {
+            const response = mockResponse();
+            await participant.handleRequest(mockRequest(undefined, ''), {} as any, response, mockToken);
+            expect(response.messages.some((m: string) => m.includes('/refresh'))).toBe(true);
         });
     });
 
@@ -175,12 +201,12 @@ describe('ChatParticipant', () => {
             expect(showSpy).toHaveBeenCalledWith(expect.anything(), { preview: false });
         });
 
-        it('should guide user to type plan/todo/implement', async () => {
+        it('should guide user to use /refresh or /worktree', async () => {
             const response = mockResponse();
             await participant.handleRequest(mockRequest('task', 'Auth Feature'), {} as any, response, mockToken);
 
             expect(response.messages.some((m: string) =>
-                m.includes('plan') && m.includes('todo') && m.includes('implement'),
+                m.includes('/refresh') || m.includes('/worktree'),
             )).toBe(true);
         });
 
@@ -491,6 +517,70 @@ describe('ChatParticipant', () => {
 
             expect(result).toBeUndefined();
         });
+
+        it('should preserve worktree-enhanced sentinel when called without worktreeTask', async () => {
+            // Simulate an AGENTS.md that already has a worktree-enhanced sentinel
+            const enhanced = [
+                '# My AGENTS',
+                '',
+                '<!-- BEGIN AGENT KANBAN — DO NOT EDIT THIS SECTION -->',
+                '## Agent Kanban',
+                '',
+                '**Active Task:** My Task',
+                '**Task File:** `.agentkanban/tasks/todo/task_123.md`',
+                '',
+                'Read the task file above before responding.',
+                '<!-- END AGENT KANBAN -->',
+            ].join('\n');
+            vi.spyOn(workspace.fs, 'readFile').mockResolvedValueOnce(
+                new TextEncoder().encode(enhanced),
+            );
+            const writeSpy = vi.spyOn(workspace.fs, 'writeFile').mockResolvedValue(undefined);
+
+            // Call WITHOUT worktreeTask — should NOT overwrite the enhanced sentinel
+            const result = await participant.syncAgentsMdSection();
+
+            expect(result).toBeDefined();
+            expect(writeSpy).not.toHaveBeenCalled();
+        });
+
+        it('should overwrite standard sentinel normally when no enhanced sentinel exists', async () => {
+            const standard = [
+                '<!-- BEGIN AGENT KANBAN — DO NOT EDIT THIS SECTION -->',
+                '## Agent Kanban',
+                '<!-- END AGENT KANBAN -->',
+            ].join('\n');
+            vi.spyOn(workspace.fs, 'readFile').mockResolvedValueOnce(
+                new TextEncoder().encode(standard),
+            );
+            const writeSpy = vi.spyOn(workspace.fs, 'writeFile').mockResolvedValue(undefined);
+
+            await participant.syncAgentsMdSection();
+
+            expect(writeSpy).toHaveBeenCalled();
+        });
+
+        it('should overwrite enhanced sentinel when called WITH worktreeTask', async () => {
+            const enhanced = [
+                '<!-- BEGIN AGENT KANBAN — DO NOT EDIT THIS SECTION -->',
+                '## Agent Kanban',
+                '',
+                '**Active Task:** Old Task',
+                '**Task File:** `.agentkanban/tasks/todo/task_old.md`',
+                '<!-- END AGENT KANBAN -->',
+            ].join('\n');
+            vi.spyOn(workspace.fs, 'readFile').mockResolvedValueOnce(
+                new TextEncoder().encode(enhanced),
+            );
+            const writeSpy = vi.spyOn(workspace.fs, 'writeFile').mockResolvedValue(undefined);
+
+            await participant.syncAgentsMdSection({ title: 'New Task', taskRelPath: '.agentkanban/tasks/todo/task_new.md' });
+
+            expect(writeSpy).toHaveBeenCalled();
+            const written = new TextDecoder().decode(writeSpy.mock.calls[0][1] as Uint8Array);
+            expect(written).toContain('**Active Task:** New Task');
+            expect(written).toContain('task_new.md');
+        });
     });
 
     describe('response.reference() calls', () => {
@@ -528,10 +618,10 @@ describe('ChatParticipant', () => {
             expect(taskRef.fsPath || taskRef.path).toContain('task_ref_1');
         });
 
-        it('should attach INSTRUCTION.md and task file references on verb commands', async () => {
+        it('should attach INSTRUCTION.md and task file references on /refresh', async () => {
             participant.lastSelectedTaskId = task.id;
             const response = mockResponse();
-            await participant.handleRequest(mockRequest('plan', ''), {} as any, response, mockToken);
+            await participant.handleRequest(mockRequest('refresh', ''), {} as any, response, mockToken);
 
             expect(response.references.length).toBe(2);
             const instrRef = response.references[0];
@@ -585,7 +675,7 @@ describe('ChatParticipant', () => {
             expect(participant.getFollowups()).toEqual([]);
         });
 
-        it('should return verb followups when a task is selected', () => {
+        it('should return refresh followup when a task is selected', () => {
             const task: Task = {
                 id: 'task_sel', title: 'Selected Task', lane: 'doing',
                 created: '2026-03-08T10:00:00.000Z', updated: '2026-03-08T10:00:00.000Z', description: '',
@@ -595,11 +685,8 @@ describe('ChatParticipant', () => {
 
             const followups = participant.getFollowups();
 
-            expect(followups).toHaveLength(4);
-            expect(followups[0]).toEqual({ prompt: '', command: 'plan', label: 'Plan: Selected Task' });
-            expect(followups[1]).toEqual({ prompt: '', command: 'todo', label: 'Todo: Selected Task' });
-            expect(followups[2]).toEqual({ prompt: '', command: 'implement', label: 'Implement: Selected Task' });
-            expect(followups[3]).toEqual({ prompt: '#todo #implement', command: 'todo', label: 'Todo + Implement: Selected Task' });
+            expect(followups).toHaveLength(1);
+            expect(followups[0]).toEqual({ prompt: '', command: 'refresh', label: 'Refresh: Selected Task' });
         });
 
         it('should fall back to /task followup when selected task is done', () => {
@@ -621,29 +708,7 @@ describe('ChatParticipant', () => {
 
     });
 
-    describe('parseVerbs', () => {
-        it('should return primary verb when no hash tags in prompt', () => {
-            expect(participant.parseVerbs('plan', 'some context')).toEqual(['plan']);
-        });
-
-        it('should combine primary verb with hash-tagged verbs', () => {
-            expect(participant.parseVerbs('plan', '#todo #implement')).toEqual(['plan', 'todo', 'implement']);
-        });
-
-        it('should deduplicate when primary verb appears as hash tag too', () => {
-            expect(participant.parseVerbs('todo', '#todo #implement')).toEqual(['todo', 'implement']);
-        });
-
-        it('should return verbs in canonical order (plan, todo, implement)', () => {
-            expect(participant.parseVerbs('implement', '#plan')).toEqual(['plan', 'implement']);
-        });
-
-        it('should be case-insensitive for hash tags', () => {
-            expect(participant.parseVerbs('plan', '#TODO #Implement')).toEqual(['plan', 'todo', 'implement']);
-        });
-    });
-
-    describe('handleVerb', () => {
+    describe('handleRefresh', () => {
         let task: Task;
 
         beforeEach(() => {
@@ -667,7 +732,7 @@ describe('ChatParticipant', () => {
 
         it('should prompt to select a task when no task is selected', async () => {
             const response = mockResponse();
-            await participant.handleRequest(mockRequest('plan', ''), {} as any, response, mockToken);
+            await participant.handleRequest(mockRequest('refresh', ''), {} as any, response, mockToken);
 
             expect(response.messages.some((m: string) => m.includes('No task selected'))).toBe(true);
         });
@@ -675,7 +740,7 @@ describe('ChatParticipant', () => {
         it('should show no-tasks message when board is empty and no task selected', async () => {
             (taskStore as any).tasks.clear();
             const response = mockResponse();
-            await participant.handleRequest(mockRequest('plan', ''), {} as any, response, mockToken);
+            await participant.handleRequest(mockRequest('refresh', ''), {} as any, response, mockToken);
 
             expect(response.messages.some((m: string) => m.includes('No active tasks'))).toBe(true);
         });
@@ -683,43 +748,18 @@ describe('ChatParticipant', () => {
         it('should re-inject context for the selected task', async () => {
             participant.lastSelectedTaskId = task.id;
             const response = mockResponse();
-            await participant.handleRequest(mockRequest('plan', ''), {} as any, response, mockToken);
+            await participant.handleRequest(mockRequest('refresh', ''), {} as any, response, mockToken);
 
             expect(response.messages.some((m: string) => m.includes('INSTRUCTION.md'))).toBe(true);
-            expect(response.messages.some((m: string) => m.includes('PLAN'))).toBe(true);
+            expect(response.messages.some((m: string) => m.includes('REFRESH'))).toBe(true);
             expect(response.messages.some((m: string) => m.includes('Verb Task'))).toBe(true);
             expect(response.messages.some((m: string) => m.includes('Task file:'))).toBe(true);
-        });
-
-        it('should route /todo command', async () => {
-            participant.lastSelectedTaskId = task.id;
-            const response = mockResponse();
-            await participant.handleRequest(mockRequest('todo', ''), {} as any, response, mockToken);
-
-            expect(response.messages.some((m: string) => m.includes('TODO'))).toBe(true);
-        });
-
-        it('should route /implement command', async () => {
-            participant.lastSelectedTaskId = task.id;
-            const response = mockResponse();
-            await participant.handleRequest(mockRequest('implement', ''), {} as any, response, mockToken);
-
-            expect(response.messages.some((m: string) => m.includes('IMPLEMENT'))).toBe(true);
-        });
-
-        it('should combine verbs from hash tags', async () => {
-            participant.lastSelectedTaskId = task.id;
-            const response = mockResponse();
-            await participant.handleRequest(mockRequest('plan', '#todo #implement extra context'), {} as any, response, mockToken);
-
-            expect(response.messages.some((m: string) => m.includes('PLAN + TODO + IMPLEMENT'))).toBe(true);
-            expect(response.messages.some((m: string) => m.includes('extra context'))).toBe(true);
         });
 
         it('should include additional context from prompt', async () => {
             participant.lastSelectedTaskId = task.id;
             const response = mockResponse();
-            await participant.handleRequest(mockRequest('plan', 'focus on error handling'), {} as any, response, mockToken);
+            await participant.handleRequest(mockRequest('refresh', 'focus on error handling'), {} as any, response, mockToken);
 
             expect(response.messages.some((m: string) => m.includes('Additional context: focus on error handling'))).toBe(true);
         });
@@ -728,7 +768,7 @@ describe('ChatParticipant', () => {
             task.lane = 'done';
             participant.lastSelectedTaskId = task.id;
             const response = mockResponse();
-            await participant.handleRequest(mockRequest('plan', ''), {} as any, response, mockToken);
+            await participant.handleRequest(mockRequest('refresh', ''), {} as any, response, mockToken);
 
             expect(response.messages.some((m: string) => m.includes('no longer active'))).toBe(true);
             expect(participant.lastSelectedTaskId).toBeUndefined();
@@ -740,19 +780,65 @@ describe('ChatParticipant', () => {
             const showSpy = vi.spyOn(window, 'showTextDocument');
 
             const response = mockResponse();
-            await participant.handleRequest(mockRequest('implement', ''), {} as any, response, mockToken);
+            await participant.handleRequest(mockRequest('refresh', ''), {} as any, response, mockToken);
 
             expect(openSpy).toHaveBeenCalled();
             expect(showSpy).toHaveBeenCalledWith(expect.anything(), { preview: false, preserveFocus: true });
         });
 
-        it('should end with "Type go" prompt', async () => {
+        it('should end with workflow phase prompt', async () => {
             participant.lastSelectedTaskId = task.id;
             const response = mockResponse();
-            await participant.handleRequest(mockRequest('plan', ''), {} as any, response, mockToken);
+            await participant.handleRequest(mockRequest('refresh', ''), {} as any, response, mockToken);
 
             const last = response.messages[response.messages.length - 1];
-            expect(last).toContain('go');
+            expect(last).toContain('plan');
+            expect(last).toContain('implement');
+        });
+
+        it('should show in-worktree hint on /refresh when in task worktree', async () => {
+            const wtTask: Task = {
+                id: 'task_refwt', title: 'Refresh WT Task', lane: 'doing',
+                created: '2026-01-01T00:00:00.000Z', updated: '2026-01-01T00:00:00.000Z',
+                description: '',
+                worktree: { branch: 'agentkanban/refwt', path: '/test-workspace', created: '' },
+            };
+            (taskStore as any).tasks.set(wtTask.id, wtTask);
+            participant.lastSelectedTaskId = wtTask.id;
+
+            const response = mockResponse();
+            await participant.handleRequest(mockRequest('refresh', ''), {} as any, response, mockToken);
+
+            expect(response.messages.some((m: string) => m.includes('Worktree workspace'))).toBe(true);
+        });
+
+        it('should NOT show in-worktree hint on /refresh when not in worktree', async () => {
+            participant.lastSelectedTaskId = task.id;
+
+            const response = mockResponse();
+            await participant.handleRequest(mockRequest('refresh', ''), {} as any, response, mockToken);
+
+            expect(response.messages.every((m: string) => !m.includes('Worktree workspace'))).toBe(true);
+        });
+
+        it('should auto-detect worktree task on /refresh when no task selected', async () => {
+            // Task with worktree matching the mock workspace path
+            const wtTask: Task = {
+                id: 'task_autowt', title: 'Auto WT Refresh', lane: 'doing',
+                created: '2026-01-01T00:00:00.000Z', updated: '2026-01-01T00:00:00.000Z',
+                description: '',
+                worktree: { branch: 'agentkanban/auto', path: '/test-workspace', created: '' },
+            };
+            (taskStore as any).tasks.set(wtTask.id, wtTask);
+            // lastSelectedTaskId is NOT set
+
+            const response = mockResponse();
+            await participant.handleRequest(mockRequest('refresh', ''), {} as any, response, mockToken);
+
+            expect(response.messages.some((m: string) => m.includes('REFRESH'))).toBe(true);
+            expect(response.messages.some((m: string) => m.includes('Auto WT Refresh'))).toBe(true);
+            expect(response.messages.some((m: string) => m.includes('Worktree workspace'))).toBe(true);
+            expect(participant.lastSelectedTaskId).toBe('task_autowt');
         });
     });
 
@@ -788,6 +874,587 @@ describe('ChatParticipant', () => {
             await participant.handleRequest(mockRequest('new', 'New Task'), {} as any, response, mockToken);
 
             expect(participant.lastSelectedTaskId).toBeUndefined();
+        });
+    });
+
+    describe('syncAgentsMdSection with worktree task', () => {
+        it('should write enhanced sentinel when worktreeTask is provided', async () => {
+            vi.spyOn(workspace.fs, 'readFile').mockRejectedValueOnce(new Error('not found'));
+            const writeSpy = vi.spyOn(workspace.fs, 'writeFile').mockResolvedValue(undefined);
+
+            await participant.syncAgentsMdSection({
+                title: 'My Feature',
+                taskRelPath: '.agentkanban/tasks/doing/task_001.md',
+            });
+
+            expect(writeSpy).toHaveBeenCalled();
+            const written = new TextDecoder().decode(writeSpy.mock.calls[0][1] as Uint8Array);
+            expect(written).toContain('**Active Task:** My Feature');
+            expect(written).toContain('**Task File:** `.agentkanban/tasks/doing/task_001.md`');
+            expect(written).toContain('Read the task file above before responding');
+            expect(written).toContain('<!-- BEGIN AGENT KANBAN');
+            expect(written).toContain('<!-- END AGENT KANBAN -->');
+        });
+
+        it('should write default sentinel when no worktreeTask is provided', async () => {
+            vi.spyOn(workspace.fs, 'readFile').mockRejectedValueOnce(new Error('not found'));
+            const writeSpy = vi.spyOn(workspace.fs, 'writeFile').mockResolvedValue(undefined);
+
+            await participant.syncAgentsMdSection();
+
+            const written = new TextDecoder().decode(writeSpy.mock.calls[0][1] as Uint8Array);
+            expect(written).not.toContain('**Active Task:**');
+            expect(written).toContain('INSTRUCTION.md');
+            expect(written).toContain('memory.md');
+        });
+    });
+
+    describe('/worktree command', () => {
+        it('should show help listing /worktree for unknown command', async () => {
+            const response = mockResponse();
+            await participant.handleRequest(mockRequest(undefined, ''), {} as any, response, mockToken);
+
+            expect(response.messages.some((m: string) => m.includes('/worktree'))).toBe(true);
+        });
+
+        it('should report no worktree service when not provided', async () => {
+            // participant has no worktreeService by default
+            participant.lastSelectedTaskId = 'task_1';
+            const task: Task = {
+                id: 'task_1', title: 'Test', lane: 'doing',
+                created: '', updated: '', description: '',
+            };
+            (taskStore as any).tasks.set(task.id, task);
+
+            const response = mockResponse();
+            await participant.handleRequest(mockRequest('worktree', ''), {} as any, response, mockToken);
+
+            expect(response.messages.some((m: string) => m.includes('not available'))).toBe(true);
+        });
+
+        it('should require task selection before /worktree', async () => {
+            const mockWs = {
+                isGitRepo: vi.fn().mockResolvedValue(true),
+            } as any;
+            const wsParticipant = new ChatParticipant(taskStore, boardConfigStore, extensionUri, undefined, undefined, mockWs);
+
+            const response = mockResponse();
+            await wsParticipant.handleRequest(mockRequest('worktree', ''), {} as any, response, mockToken);
+
+            expect(response.messages.some((m: string) => m.includes('No task selected'))).toBe(true);
+        });
+
+        it('should auto-detect worktree task on /worktree when no task selected', async () => {
+            const mockWs = {
+                isGitRepo: vi.fn().mockResolvedValue(true),
+                exists: vi.fn().mockResolvedValue(true),
+            } as any;
+            const wsParticipant = new ChatParticipant(taskStore, boardConfigStore, extensionUri, undefined, undefined, mockWs);
+
+            const wtTask: Task = {
+                id: 'task_wt_auto', title: 'WT Auto Task', lane: 'doing',
+                created: '', updated: '', description: '',
+                worktree: { branch: 'agentkanban/auto', path: '/test-workspace', created: '' },
+            };
+            (taskStore as any).tasks.set(wtTask.id, wtTask);
+            // NO lastSelectedTaskId set
+
+            const response = mockResponse();
+            await wsParticipant.handleRequest(mockRequest('worktree', ''), {} as any, response, mockToken);
+
+            // Should auto-detect and handle the existing worktree
+            expect(response.messages.some((m: string) => m.includes('already has a worktree'))).toBe(true);
+            expect(response.messages.some((m: string) => m.includes('Worktree workspace'))).toBe(true);
+        });
+
+        it('should require git repo for /worktree', async () => {
+            const mockWs = {
+                isGitRepo: vi.fn().mockResolvedValue(false),
+            } as any;
+            const wsParticipant = new ChatParticipant(taskStore, boardConfigStore, extensionUri, undefined, undefined, mockWs);
+
+            wsParticipant.lastSelectedTaskId = 'task_1';
+            const task: Task = {
+                id: 'task_1', title: 'Test', lane: 'doing',
+                created: '', updated: '', description: '',
+            };
+            (taskStore as any).tasks.set(task.id, task);
+
+            const response = mockResponse();
+            await wsParticipant.handleRequest(mockRequest('worktree', ''), {} as any, response, mockToken);
+
+            expect(response.messages.some((m: string) => m.includes('not a git repository'))).toBe(true);
+        });
+
+        it('should report existing worktree when task already has one', async () => {
+            const mockWs = {
+                isGitRepo: vi.fn().mockResolvedValue(true),
+                exists: vi.fn().mockResolvedValue(true),
+            } as any;
+            const wsParticipant = new ChatParticipant(taskStore, boardConfigStore, extensionUri, undefined, undefined, mockWs);
+
+            const task: Task = {
+                id: 'task_wt', title: 'WT Task', lane: 'doing',
+                created: '', updated: '', description: '',
+                worktree: { branch: 'agentkanban/test', path: '/wt/test', created: '' },
+            };
+            (taskStore as any).tasks.set(task.id, task);
+            wsParticipant.lastSelectedTaskId = task.id;
+
+            const response = mockResponse();
+            await wsParticipant.handleRequest(mockRequest('worktree', ''), {} as any, response, mockToken);
+
+            expect(response.messages.some((m: string) => m.includes('already has a worktree'))).toBe(true);
+        });
+
+        it('should open worktree on "open" subcommand', async () => {
+            const openSpy = vi.fn().mockResolvedValue(undefined);
+            const existsSpy = vi.fn().mockResolvedValue(true);
+            const mockWs = {
+                isGitRepo: vi.fn().mockResolvedValue(true),
+                exists: existsSpy,
+                openInVSCode: openSpy,
+            } as any;
+            const wsParticipant = new ChatParticipant(taskStore, boardConfigStore, extensionUri, undefined, undefined, mockWs);
+
+            const task: Task = {
+                id: 'task_open', title: 'Open Task', lane: 'doing',
+                created: '', updated: '', description: '',
+                worktree: { branch: 'agentkanban/test', path: '/wt/test', created: '' },
+            };
+            (taskStore as any).tasks.set(task.id, task);
+            wsParticipant.lastSelectedTaskId = task.id;
+
+            const response = mockResponse();
+            await wsParticipant.handleRequest(mockRequest('worktree', 'open'), {} as any, response, mockToken);
+
+            expect(openSpy).toHaveBeenCalledWith('/wt/test');
+            expect(response.messages.some((m: string) => m.includes('Opening worktree'))).toBe(true);
+        });
+
+        it('should show worktree reminder on "open" when already in worktree', async () => {
+            const openSpy = vi.fn().mockResolvedValue(undefined);
+            const existsSpy = vi.fn().mockResolvedValue(true);
+            const mockWs = {
+                isGitRepo: vi.fn().mockResolvedValue(true),
+                exists: existsSpy,
+                openInVSCode: openSpy,
+            } as any;
+            const wsParticipant = new ChatParticipant(taskStore, boardConfigStore, extensionUri, undefined, undefined, mockWs);
+
+            const task: Task = {
+                id: 'task_openwt', title: 'Open WT Here', lane: 'doing',
+                created: '', updated: '', description: '',
+                worktree: { branch: 'agentkanban/here', path: '/test-workspace', created: '' },
+            };
+            (taskStore as any).tasks.set(task.id, task);
+            wsParticipant.lastSelectedTaskId = task.id;
+
+            const response = mockResponse();
+            await wsParticipant.handleRequest(mockRequest('worktree', 'open'), {} as any, response, mockToken);
+
+            expect(response.messages.some((m: string) => m.includes('Worktree workspace'))).toBe(true);
+        });
+
+        it('should clean up stale worktree metadata on "open" when directory is gone', async () => {
+            const existsSpy = vi.fn().mockResolvedValue(false);
+            const saveSpy = vi.spyOn(taskStore, 'save').mockResolvedValue(undefined);
+            const mockWs = {
+                isGitRepo: vi.fn().mockResolvedValue(true),
+                exists: existsSpy,
+            } as any;
+            const wsParticipant = new ChatParticipant(taskStore, boardConfigStore, extensionUri, undefined, undefined, mockWs);
+
+            const task: Task = {
+                id: 'task_stale', title: 'Stale Task', lane: 'doing',
+                created: '', updated: '', description: '',
+                worktree: { branch: 'agentkanban/old', path: '/wt/old', created: '' },
+            };
+            (taskStore as any).tasks.set(task.id, task);
+            wsParticipant.lastSelectedTaskId = task.id;
+
+            const response = mockResponse();
+            await wsParticipant.handleRequest(mockRequest('worktree', 'open'), {} as any, response, mockToken);
+
+            expect(response.messages.some((m: string) => m.includes('no longer exists'))).toBe(true);
+            expect(saveSpy).toHaveBeenCalled();
+            expect(task.worktree).toBeUndefined();
+        });
+
+        it('should report no worktree on "open" when task has none', async () => {
+            const mockWs = {
+                isGitRepo: vi.fn().mockResolvedValue(true),
+            } as any;
+            const wsParticipant = new ChatParticipant(taskStore, boardConfigStore, extensionUri, undefined, undefined, mockWs);
+
+            const task: Task = {
+                id: 'task_nowt', title: 'No WT', lane: 'doing',
+                created: '', updated: '', description: '',
+            };
+            (taskStore as any).tasks.set(task.id, task);
+            wsParticipant.lastSelectedTaskId = task.id;
+
+            const response = mockResponse();
+            await wsParticipant.handleRequest(mockRequest('worktree', 'open'), {} as any, response, mockToken);
+
+            expect(response.messages.some((m: string) => m.includes('has no worktree'))).toBe(true);
+        });
+
+        it('should remove worktree on "remove" subcommand', async () => {
+            const removeSpy = vi.fn().mockResolvedValue(undefined);
+            const saveSpy = vi.spyOn(taskStore, 'save').mockResolvedValue(undefined);
+            const mockWs = {
+                isGitRepo: vi.fn().mockResolvedValue(true),
+                remove: removeSpy,
+            } as any;
+            const wsParticipant = new ChatParticipant(taskStore, boardConfigStore, extensionUri, undefined, undefined, mockWs);
+
+            const worktreeInfo = { branch: 'agentkanban/rm', path: '/wt/rm', created: '' };
+            const task: Task = {
+                id: 'task_rm', title: 'Remove Task', lane: 'doing',
+                created: '', updated: '', description: '',
+                worktree: { ...worktreeInfo },
+            };
+            (taskStore as any).tasks.set(task.id, task);
+            wsParticipant.lastSelectedTaskId = task.id;
+
+            const response = mockResponse();
+            await wsParticipant.handleRequest(mockRequest('worktree', 'remove'), {} as any, response, mockToken);
+
+            expect(removeSpy).toHaveBeenCalled();
+            expect(saveSpy).toHaveBeenCalled();
+            expect(task.worktree).toBeUndefined();
+            expect(response.messages.some((m: string) => m.includes('Worktree removed'))).toBe(true);
+        });
+
+        it('should report no worktree on "remove" when task has none', async () => {
+            const mockWs = {
+                isGitRepo: vi.fn().mockResolvedValue(true),
+            } as any;
+            const wsParticipant = new ChatParticipant(taskStore, boardConfigStore, extensionUri, undefined, undefined, mockWs);
+
+            const task: Task = {
+                id: 'task_nrm', title: 'No WT Remove', lane: 'doing',
+                created: '', updated: '', description: '',
+            };
+            (taskStore as any).tasks.set(task.id, task);
+            wsParticipant.lastSelectedTaskId = task.id;
+
+            const response = mockResponse();
+            await wsParticipant.handleRequest(mockRequest('worktree', 'remove'), {} as any, response, mockToken);
+
+            expect(response.messages.some((m: string) => m.includes('has no worktree to remove'))).toBe(true);
+        });
+    });
+
+    describe('getFollowups with worktree', () => {
+        it('should include "Create Worktree" followup when task has no worktree and service exists', () => {
+            const mockWs = {} as any;
+            const wsParticipant = new ChatParticipant(taskStore, boardConfigStore, extensionUri, undefined, undefined, mockWs);
+
+            const task: Task = {
+                id: 'task_fu', title: 'Followup Task', lane: 'doing',
+                created: '2026-03-08T10:00:00.000Z', updated: '2026-03-08T10:00:00.000Z', description: '',
+            };
+            (taskStore as any).tasks.set(task.id, task);
+            wsParticipant.lastSelectedTaskId = task.id;
+
+            const followups = wsParticipant.getFollowups();
+
+            expect(followups.some(f => f.command === 'worktree' && f.label?.includes('Create Worktree'))).toBe(true);
+        });
+
+        it('should include "Open Worktree" followup when task has a worktree', () => {
+            const mockWs = {} as any;
+            const wsParticipant = new ChatParticipant(taskStore, boardConfigStore, extensionUri, undefined, undefined, mockWs);
+
+            const task: Task = {
+                id: 'task_owt', title: 'Open WT Task', lane: 'doing',
+                created: '2026-03-08T10:00:00.000Z', updated: '2026-03-08T10:00:00.000Z', description: '',
+                worktree: { branch: 'agentkanban/test', path: '/wt/test', created: '' },
+            };
+            (taskStore as any).tasks.set(task.id, task);
+            wsParticipant.lastSelectedTaskId = task.id;
+
+            const followups = wsParticipant.getFollowups();
+
+            expect(followups.some(f => f.command === 'worktree' && f.prompt === 'open' && f.label?.includes('Open Worktree'))).toBe(true);
+        });
+
+        it('should not include worktree followups when no worktreeService', () => {
+            const task: Task = {
+                id: 'task_nows', title: 'No WS', lane: 'doing',
+                created: '2026-03-08T10:00:00.000Z', updated: '2026-03-08T10:00:00.000Z', description: '',
+            };
+            (taskStore as any).tasks.set(task.id, task);
+            participant.lastSelectedTaskId = task.id;
+
+            const followups = participant.getFollowups();
+
+            // Standard participant has no worktreeService, so only verb followups
+            expect(followups.every(f => f.command !== 'worktree')).toBe(true);
+        });
+    });
+
+    describe('enforceWorktrees', () => {
+        it('should block refresh when enforceWorktrees is true and task has no worktree', async () => {
+            const mockWs = {
+                isGitRepo: vi.fn().mockResolvedValue(true),
+            } as any;
+            const wsParticipant = new ChatParticipant(taskStore, boardConfigStore, extensionUri, undefined, undefined, mockWs);
+
+            const task: Task = {
+                id: 'task_ew', title: 'Enforce Task', lane: 'doing',
+                created: '2026-03-08T10:00:00.000Z', updated: '2026-03-08T10:00:00.000Z', description: '',
+            };
+            (taskStore as any).tasks.set(task.id, task);
+            wsParticipant.lastSelectedTaskId = task.id;
+
+            vi.spyOn(workspace, 'getConfiguration').mockReturnValue({
+                get: (key: string, defaultValue?: any) => {
+                    if (key === 'enforceWorktrees') { return true; }
+                    return defaultValue;
+                },
+                update: async () => { },
+            } as any);
+
+            const response = mockResponse();
+            await wsParticipant.handleRequest(mockRequest('refresh', ''), {} as any, response, mockToken);
+
+            expect(response.messages.some((m: string) => m.includes('Worktree required'))).toBe(true);
+        });
+
+        it('should allow refresh when task has a worktree even with enforceWorktrees', async () => {
+            const mockWs = {
+                isGitRepo: vi.fn().mockResolvedValue(true),
+            } as any;
+            const wsParticipant = new ChatParticipant(taskStore, boardConfigStore, extensionUri, undefined, undefined, mockWs);
+
+            const task: Task = {
+                id: 'task_ewok', title: 'Has WT', lane: 'doing',
+                created: '2026-03-08T10:00:00.000Z', updated: '2026-03-08T10:00:00.000Z', description: '',
+                worktree: { branch: 'agentkanban/test', path: '/wt/test', created: '' },
+            };
+            (taskStore as any).tasks.set(task.id, task);
+            wsParticipant.lastSelectedTaskId = task.id;
+
+            vi.spyOn(workspace, 'getConfiguration').mockReturnValue({
+                get: (key: string, defaultValue?: any) => {
+                    if (key === 'enforceWorktrees') { return true; }
+                    return defaultValue;
+                },
+                update: async () => { },
+            } as any);
+            vi.spyOn(workspace.fs, 'readFile').mockResolvedValue(new TextEncoder().encode('# Template'));
+            vi.spyOn(workspace.fs, 'writeFile').mockResolvedValue(undefined);
+            vi.spyOn(workspace, 'openTextDocument').mockResolvedValue({} as any);
+            vi.spyOn(window, 'showTextDocument').mockResolvedValue(undefined as any);
+
+            const response = mockResponse();
+            await wsParticipant.handleRequest(mockRequest('refresh', ''), {} as any, response, mockToken);
+
+            expect(response.messages.some((m: string) => m.includes('REFRESH'))).toBe(true);
+            expect(response.messages.every((m: string) => !m.includes('Worktree required'))).toBe(true);
+        });
+    });
+
+    describe('resolveTaskFromPrompt — slug matching', () => {
+        beforeEach(() => {
+            const tasks: Task[] = [
+                { id: 'task_1', title: 'Auth Feature', lane: 'doing', created: '', updated: '', description: '', slug: 'auth_feature' },
+                { id: 'task_2', title: 'Login Bug', lane: 'todo', created: '', updated: '', description: '', slug: 'login_bug' },
+                { id: 'task_3', title: 'Consider Git Worktree Based Flows', lane: 'doing', created: '', updated: '', description: '', slug: 'consider_git_worktree_based_flows' },
+            ];
+            for (const t of tasks) {
+                (taskStore as any).tasks.set(t.id, t);
+            }
+        });
+
+        it('should match exact slug (case-insensitive)', () => {
+            const result = participant.resolveTaskFromPrompt('auth_feature');
+            expect(result.task).toBeDefined();
+            expect(result.task!.title).toBe('Auth Feature');
+            expect(result.freeText).toBe('');
+        });
+
+        it('should match slug case-insensitively', () => {
+            const result = participant.resolveTaskFromPrompt('AUTH_FEATURE');
+            expect(result.task).toBeDefined();
+            expect(result.task!.title).toBe('Auth Feature');
+        });
+
+        it('should prefer slug match over other methods', () => {
+            const result = participant.resolveTaskFromPrompt('login_bug');
+            expect(result.task).toBeDefined();
+            expect(result.task!.title).toBe('Login Bug');
+        });
+
+        it('should match long slug', () => {
+            const result = participant.resolveTaskFromPrompt('consider_git_worktree_based_flows');
+            expect(result.task).toBeDefined();
+            expect(result.task!.title).toBe('Consider Git Worktree Based Flows');
+        });
+    });
+
+    describe('resolveTaskFromPrompt — alphanumeric fuzzy', () => {
+        beforeEach(() => {
+            const tasks: Task[] = [
+                { id: 'task_1', title: 'Auth Feature', lane: 'doing', created: '', updated: '', description: '' },
+                { id: 'task_2', title: 'Consider Git Worktree Based Flows', lane: 'doing', created: '', updated: '', description: '' },
+                { id: 'task_3', title: 'Login Bug Fix', lane: 'todo', created: '', updated: '', description: '' },
+            ];
+            for (const t of tasks) {
+                (taskStore as any).tasks.set(t.id, t);
+            }
+        });
+
+        it('should match when stripped query is substring of stripped title', () => {
+            const result = participant.resolveTaskFromPrompt('worktree');
+            expect(result.task).toBeDefined();
+            expect(result.task!.title).toBe('Consider Git Worktree Based Flows');
+        });
+
+        it('should match ignoring spaces and punctuation', () => {
+            const result = participant.resolveTaskFromPrompt('gitworktree');
+            expect(result.task).toBeDefined();
+            expect(result.task!.title).toBe('Consider Git Worktree Based Flows');
+        });
+
+        it('should match partial alphanumeric query', () => {
+            const result = participant.resolveTaskFromPrompt('bugfix');
+            expect(result.task).toBeDefined();
+            expect(result.task!.title).toBe('Login Bug Fix');
+        });
+
+        it('should not match when ambiguous (equal length titles)', () => {
+            // Add another task with same alnum length — both contain "feature"
+            const t: Task = { id: 'task_4', title: 'Cool Feature', lane: 'todo', created: '', updated: '', description: '' };
+            (taskStore as any).tasks.set(t.id, t);
+
+            // "feature" matches both "Auth Feature" and "Cool Feature" — these have same alnum length (11 and 11)
+            // The function picks the longer alnum title, but Auth Feature = "authfeature" (11) and "coolfeature" (11)
+            // This should be ambiguous and fall through to first-word partial
+            const result = participant.resolveTaskFromPrompt('feature');
+            // Should still match via first-word partial (step 5) — "feature" found in a title
+            expect(result.task).toBeDefined();
+        });
+    });
+
+    describe('/task worktree awareness', () => {
+        it('should show worktree status when task has worktree', async () => {
+            const task: Task = {
+                id: 'task_wt', title: 'Worktree Task', lane: 'doing',
+                created: '2026-01-01T00:00:00.000Z', updated: '2026-01-01T00:00:00.000Z',
+                description: '',
+                worktree: { branch: 'agentkanban/wt', path: '/wt/path', created: '' },
+            };
+            (taskStore as any).tasks.set(task.id, task);
+
+            vi.spyOn(workspace, 'openTextDocument').mockResolvedValue({} as any);
+            vi.spyOn(window, 'showTextDocument').mockResolvedValue(undefined as any);
+
+            const response = mockResponse();
+            await participant.handleRequest(mockRequest('task', 'Worktree Task'), {} as any, response, mockToken);
+
+            expect(response.messages.some((m: string) => m.includes('/wt/path'))).toBe(true);
+            expect(response.messages.some((m: string) => m.includes('agentkanban/wt'))).toBe(true);
+        });
+
+        it('should show enforce hint when worktrees enforced and no worktree', async () => {
+            const mockWs = { isGitRepo: vi.fn().mockResolvedValue(true) } as any;
+            const wsParticipant = new ChatParticipant(taskStore, boardConfigStore, extensionUri, () => true, undefined, mockWs);
+
+            const task: Task = {
+                id: 'task_notwt', title: 'No WT Task', lane: 'doing',
+                created: '2026-01-01T00:00:00.000Z', updated: '2026-01-01T00:00:00.000Z',
+                description: '',
+            };
+            (taskStore as any).tasks.set(task.id, task);
+
+            vi.spyOn(workspace, 'getConfiguration').mockReturnValue({
+                get: (key: string, defaultValue?: any) => {
+                    if (key === 'enforceWorktrees') { return true; }
+                    if (key === 'customInstructionFile') { return ''; }
+                    return defaultValue;
+                },
+                update: async () => { },
+            } as any);
+            vi.spyOn(workspace, 'openTextDocument').mockResolvedValue({} as any);
+            vi.spyOn(window, 'showTextDocument').mockResolvedValue(undefined as any);
+
+            const response = mockResponse();
+            await wsParticipant.handleRequest(mockRequest('task', 'No WT Task'), {} as any, response, mockToken);
+
+            expect(response.messages.some((m: string) => m.includes('Worktree enforcement is on'))).toBe(true);
+        });
+
+        it('should not show worktree info when task has no worktree', async () => {
+            const task: Task = {
+                id: 'task_plain', title: 'Plain Task', lane: 'doing',
+                created: '2026-01-01T00:00:00.000Z', updated: '2026-01-01T00:00:00.000Z',
+                description: '',
+            };
+            (taskStore as any).tasks.set(task.id, task);
+
+            vi.spyOn(workspace, 'openTextDocument').mockResolvedValue({} as any);
+            vi.spyOn(window, 'showTextDocument').mockResolvedValue(undefined as any);
+
+            const response = mockResponse();
+            await participant.handleRequest(mockRequest('task', 'Plain Task'), {} as any, response, mockToken);
+
+            expect(response.messages.every((m: string) => !m.includes('Worktree:'))).toBe(true);
+        });
+
+        it('should show in-worktree hint when workspace IS the task worktree', async () => {
+            const task: Task = {
+                id: 'task_inwt', title: 'In WT Task', lane: 'doing',
+                created: '2026-01-01T00:00:00.000Z', updated: '2026-01-01T00:00:00.000Z',
+                description: '',
+                worktree: { branch: 'agentkanban/inwt', path: '/test-workspace', created: '' },
+            };
+            (taskStore as any).tasks.set(task.id, task);
+
+            vi.spyOn(workspace, 'openTextDocument').mockResolvedValue({} as any);
+            vi.spyOn(window, 'showTextDocument').mockResolvedValue(undefined as any);
+
+            const response = mockResponse();
+            await participant.handleRequest(mockRequest('task', 'In WT Task'), {} as any, response, mockToken);
+
+            expect(response.messages.some((m: string) => m.includes('Worktree workspace'))).toBe(true);
+        });
+
+        it('should NOT show in-worktree hint when workspace differs from worktree path', async () => {
+            const task: Task = {
+                id: 'task_diffwt', title: 'Diff WT Task', lane: 'doing',
+                created: '2026-01-01T00:00:00.000Z', updated: '2026-01-01T00:00:00.000Z',
+                description: '',
+                worktree: { branch: 'agentkanban/diffwt', path: '/other-workspace', created: '' },
+            };
+            (taskStore as any).tasks.set(task.id, task);
+
+            vi.spyOn(workspace, 'openTextDocument').mockResolvedValue({} as any);
+            vi.spyOn(window, 'showTextDocument').mockResolvedValue(undefined as any);
+
+            const response = mockResponse();
+            await participant.handleRequest(mockRequest('task', 'Diff WT Task'), {} as any, response, mockToken);
+
+            expect(response.messages.every((m: string) => !m.includes('Worktree workspace'))).toBe(true);
+        });
+
+        it('should auto-detect worktree task on /task with no args', async () => {
+            const wtTask: Task = {
+                id: 'task_taskwt', title: 'WT Task Auto', lane: 'doing',
+                created: '2026-01-01T00:00:00.000Z', updated: '2026-01-01T00:00:00.000Z',
+                description: '',
+                worktree: { branch: 'agentkanban/tauto', path: '/test-workspace', created: '' },
+            };
+            (taskStore as any).tasks.set(wtTask.id, wtTask);
+
+            const response = mockResponse();
+            await participant.handleRequest(mockRequest('task', ''), {} as any, response, mockToken);
+
+            expect(response.messages.some((m: string) => m.includes('WT Task Auto'))).toBe(true);
+            expect(response.messages.some((m: string) => m.includes('Worktree workspace'))).toBe(true);
         });
     });
 });

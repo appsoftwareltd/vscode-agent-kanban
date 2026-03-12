@@ -309,6 +309,49 @@ describe('TaskStore', () => {
             expect(result!.sortOrder).toBeUndefined();
         });
 
+        it('should serialise and deserialise worktree info', () => {
+            const task: Task = {
+                id: 'task_wt_001',
+                title: 'Worktree task',
+                lane: 'doing',
+                created: '2026-03-10T10:00:00.000Z',
+                updated: '2026-03-10T10:00:00.000Z',
+                description: '',
+                worktree: {
+                    branch: 'agentkanban/20260310_100000000_abc_test',
+                    path: '/home/user/repo-worktrees/20260310_100000000_abc_test',
+                    created: '2026-03-10T10:30:00.000Z',
+                },
+            };
+            const md = TaskStore.serialise(task);
+            expect(md).toContain('worktree:');
+            expect(md).toContain('branch: agentkanban/20260310_100000000_abc_test');
+            expect(md).toContain('path: /home/user/repo-worktrees/20260310_100000000_abc_test');
+
+            const result = TaskStore.deserialise(md);
+            expect(result).not.toBeNull();
+            expect(result!.worktree).toBeDefined();
+            expect(result!.worktree!.branch).toBe('agentkanban/20260310_100000000_abc_test');
+            expect(result!.worktree!.path).toBe('/home/user/repo-worktrees/20260310_100000000_abc_test');
+            expect(result!.worktree!.created).toBe('2026-03-10T10:30:00.000Z');
+        });
+
+        it('should omit worktree when not set', () => {
+            const task: Task = {
+                id: 'task_wt_002',
+                title: 'No worktree',
+                lane: 'todo',
+                created: '2026-03-10T10:00:00.000Z',
+                updated: '2026-03-10T10:00:00.000Z',
+                description: '',
+            };
+            const md = TaskStore.serialise(task);
+            expect(md).not.toMatch(/^worktree:/m);
+
+            const result = TaskStore.deserialise(md);
+            expect(result!.worktree).toBeUndefined();
+        });
+
         it('should not serialise lane to YAML (determined by directory)', () => {
             const task: Task = {
                 id: 'task_014',
@@ -660,6 +703,123 @@ describe('TaskStore', () => {
 
             expect(writtenFiles.size).toBe(0);
             expect(deletedPaths.length).toBe(0);
+        });
+    });
+
+    describe('extractSlugFromId', () => {
+        it('should extract slug from standard task ID', () => {
+            expect(TaskStore.extractSlugFromId('task_20260311_085243300_4auczp_my_task')).toBe('my_task');
+        });
+
+        it('should extract multi-word slug', () => {
+            expect(TaskStore.extractSlugFromId('task_20260311_085243300_abc123_consider_git_worktree_based_flows'))
+                .toBe('consider_git_worktree_based_flows');
+        });
+
+        it('should extract single-word slug', () => {
+            expect(TaskStore.extractSlugFromId('task_20260311_085243300_abc123_test')).toBe('test');
+        });
+
+        it('should return empty string for malformed ID', () => {
+            expect(TaskStore.extractSlugFromId('not_a_valid_id')).toBe('');
+        });
+
+        it('should return empty string for ID with too few parts', () => {
+            expect(TaskStore.extractSlugFromId('task_date_time')).toBe('');
+        });
+
+        it('should return empty string for non-task prefix', () => {
+            expect(TaskStore.extractSlugFromId('todo_20260311_085243300_abc123_slug')).toBe('');
+        });
+    });
+
+    describe('slug in frontmatter', () => {
+        it('should include slug when creating a task', () => {
+            const uri = { scheme: 'file', fsPath: '/test', path: '/test', toString: () => '/test' } as any;
+            const ts = new TaskStore(uri);
+            const task = ts.createTask('My Cool Feature', 'todo');
+
+            expect(task.slug).toBe('my_cool_feature');
+        });
+
+        it('should serialise slug to frontmatter', () => {
+            const task: Task = {
+                id: 'task_001', title: 'Test', lane: 'todo',
+                created: '2026-01-01T00:00:00.000Z', updated: '2026-01-01T00:00:00.000Z',
+                description: '', slug: 'my_slug',
+            };
+            const output = TaskStore.serialise(task);
+
+            expect(output).toContain('slug: my_slug');
+        });
+
+        it('should not serialise slug when undefined', () => {
+            const task: Task = {
+                id: 'task_001', title: 'Test', lane: 'todo',
+                created: '2026-01-01T00:00:00.000Z', updated: '2026-01-01T00:00:00.000Z',
+                description: '',
+            };
+            const output = TaskStore.serialise(task);
+
+            expect(output).not.toContain('slug:');
+        });
+
+        it('should deserialise slug from frontmatter', () => {
+            const text = '---\ntitle: Test\ncreated: 2026-01-01T00:00:00.000Z\nupdated: 2026-01-01T00:00:00.000Z\nslug: my_feature\n---\n\n## Conversation\n';
+            const task = TaskStore.deserialise(text);
+
+            expect(task).not.toBeNull();
+            expect(task!.slug).toBe('my_feature');
+        });
+
+        it('should deserialise without slug (backward compat)', () => {
+            const text = '---\ntitle: Test\ncreated: 2026-01-01T00:00:00.000Z\nupdated: 2026-01-01T00:00:00.000Z\n---\n\n## Conversation\n';
+            const task = TaskStore.deserialise(text);
+
+            expect(task).not.toBeNull();
+            expect(task!.slug).toBeUndefined();
+        });
+
+        it('should round-trip slug through serialise/deserialise', () => {
+            const task: Task = {
+                id: 'task_001', title: 'Round Trip', lane: 'todo',
+                created: '2026-01-01T00:00:00.000Z', updated: '2026-01-01T00:00:00.000Z',
+                description: '', slug: 'round_trip',
+            };
+            const text = TaskStore.serialise(task, '\n## Conversation\n');
+            const parsed = TaskStore.deserialise(text);
+
+            expect(parsed!.slug).toBe('round_trip');
+        });
+    });
+
+    describe('findByTitle with slug', () => {
+        it('should find tasks by slug match', () => {
+            const uri = { scheme: 'file', fsPath: '/test', path: '/test', toString: () => '/test' } as any;
+            const ts = new TaskStore(uri);
+            const task: Task = {
+                id: 'task_001', title: 'My Cool Feature', lane: 'doing',
+                created: '', updated: '', description: '', slug: 'my_cool_feature',
+            };
+            (ts as any).tasks.set(task.id, task);
+
+            const results = ts.findByTitle('my_cool_feature');
+            expect(results).toHaveLength(1);
+            expect(results[0].title).toBe('My Cool Feature');
+        });
+
+        it('should find tasks by alphanumeric match', () => {
+            const uri = { scheme: 'file', fsPath: '/test', path: '/test', toString: () => '/test' } as any;
+            const ts = new TaskStore(uri);
+            const task: Task = {
+                id: 'task_001', title: 'Consider Git Worktree', lane: 'doing',
+                created: '', updated: '', description: '',
+            };
+            (ts as any).tasks.set(task.id, task);
+
+            const results = ts.findByTitle('gitworktree');
+            expect(results).toHaveLength(1);
+            expect(results[0].title).toBe('Consider Git Worktree');
         });
     });
 });

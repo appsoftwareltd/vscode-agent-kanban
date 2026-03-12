@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { parse, stringify } from 'yaml';
-import type { Task, Priority } from './types';
+import type { Task, Priority, WorktreeInfo } from './types';
 import { slugifyLane, RESERVED_LANES } from './types';
 import type { LogService } from './LogService';
 import { NO_OP_LOGGER } from './LogService';
@@ -156,6 +156,10 @@ export class TaskStore {
                     if (task) {
                         task.id = name.slice(0, -3);
                         task.lane = dirName; // Directory is the source of truth
+                        // Backward compat: recover slug from ID if not in frontmatter
+                        if (!task.slug) {
+                            task.slug = TaskStore.extractSlugFromId(task.id);
+                        }
                         this.tasks.set(task.id, task);
                     }
                 } catch {
@@ -357,14 +361,18 @@ export class TaskStore {
             created: now.toISOString(),
             updated: now.toISOString(),
             description: '',
+            slug: TaskStore.slugify(title),
         };
     }
 
-    /** Find tasks whose title contains the query (case-insensitive). Excludes tasks in the Done lane. */
+    /** Find tasks whose title or slug contains the query (case-insensitive). Excludes tasks in the given lane. */
     findByTitle(query: string, excludeLane?: string): Task[] {
         const q = query.toLowerCase();
+        const qAlnum = q.replace(/[^a-z0-9]/g, '');
         return this.getAll().filter(t =>
-            t.title.toLowerCase().includes(q) &&
+            (t.title.toLowerCase().includes(q) ||
+                (t.slug && t.slug.toLowerCase().includes(q)) ||
+                (qAlnum && t.title.toLowerCase().replace(/[^a-z0-9]/g, '').includes(qAlnum))) &&
             (!excludeLane || t.lane !== excludeLane),
         );
     }
@@ -384,6 +392,19 @@ export class TaskStore {
         const uuid = Math.random().toString(36).slice(2, 8);
         const slug = TaskStore.slugify(title);
         return `task_${ts}_${uuid}_${slug}`;
+    }
+
+    /**
+     * Extract the slug portion from a task ID.
+     * ID format: task_YYYYMMDD_HHmmssfff_XXXXXX_<slug>
+     * Returns empty string if the ID doesn't match the expected format.
+     */
+    static extractSlugFromId(id: string): string {
+        // Split on underscores: task, YYYYMMDD, HHmmssfff, XXXXXX, ...slug parts
+        const parts = id.split('_');
+        // Minimum: task + date + time + uuid + at least one slug part = 5 parts
+        if (parts.length < 5 || parts[0] !== 'task') { return ''; }
+        return parts.slice(4).join('_');
     }
 
     /**
@@ -427,6 +448,16 @@ export class TaskStore {
         if (task.sortOrder != null) {
             frontmatter.sortOrder = task.sortOrder;
         }
+        if (task.slug) {
+            frontmatter.slug = task.slug;
+        }
+        if (task.worktree) {
+            frontmatter.worktree = {
+                branch: task.worktree.branch,
+                path: task.worktree.path,
+                created: task.worktree.created,
+            };
+        }
         const yamlStr = stringify(frontmatter, { lineWidth: 0 }).trimEnd();
         const mdBody = body ?? '\n## Conversation\n';
         return `${FRONTMATTER_FENCE}\n${yamlStr}\n${FRONTMATTER_FENCE}\n${mdBody}`;
@@ -459,6 +490,14 @@ export class TaskStore {
                 labels: Array.isArray(data.labels) ? (data.labels as string[]) : undefined,
                 dueDate: (data.dueDate as string) || undefined,
                 sortOrder: typeof data.sortOrder === 'number' ? data.sortOrder : undefined,
+                slug: typeof data.slug === 'string' ? data.slug : undefined,
+                worktree: data.worktree && typeof data.worktree === 'object'
+                    ? {
+                        branch: String((data.worktree as Record<string, unknown>).branch ?? ''),
+                        path: String((data.worktree as Record<string, unknown>).path ?? ''),
+                        created: String((data.worktree as Record<string, unknown>).created ?? ''),
+                    } as WorktreeInfo
+                    : undefined,
             };
         } catch {
             return null;
