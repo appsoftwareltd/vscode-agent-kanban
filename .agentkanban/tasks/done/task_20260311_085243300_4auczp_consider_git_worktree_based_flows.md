@@ -1,10 +1,12 @@
 ---
 title: Consider Git worktree based flows
 created: 2026-03-11T08:52:43.300Z
-updated: 2026-03-11T08:52:43.301Z
+updated: 2026-03-12T11:17:24.792Z
 description: Consider how this could help with isolation and retention of use of a single task
-sortOrder: 1773053948950
+sortOrder: 1773042102151.625
+slug: consider_git_worktree_based_flows
 ---
+
 
 ## Conversation
 
