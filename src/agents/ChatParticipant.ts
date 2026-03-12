@@ -28,6 +28,9 @@ const AGENTS_MD_SECTION = [
     AGENTS_MD_END,
 ].join('\n');
 
+/** Succinct reminder shown in worktree workspaces to discourage redundant commands. */
+const WORKTREE_WORKSPACE_HINT = 'ℹ️ **Worktree workspace** — AGENTS.md permanently provides task context. You don\'t need these commands unless you use `/task` to switch tasks.\n\n';
+
 /** Build a richer AGENTS.md sentinel for worktree-linked workspaces. */
 export function buildWorktreeAgentsMdSection(taskTitle: string, taskRelPath: string): string {
     return [
@@ -106,7 +109,7 @@ export class ChatParticipant {
                 response.markdown('- `@kanban /task <task name>` — Select a task to work on\n');
                 response.markdown('- `@kanban /refresh` — Re-inject agent context for the selected task\n');
                 response.markdown('- `@kanban /worktree` — Create a git worktree for the selected task\n');
-                response.markdown('- `@kanban /worktree open` — Open the task worktree in VS Code\n');
+                response.markdown('- `@kanban /worktree open` — Open the task worktree for the selected task in VS Code\n');
                 response.markdown('- `@kanban /worktree remove` — Remove the task worktree\n');
                 return;
             }
@@ -164,6 +167,15 @@ export class ChatParticipant {
                 // File doesn't exist — start fresh
             }
 
+            // When called WITHOUT worktreeTask, check if the existing AGENTS.md
+            // already contains a worktree-enhanced sentinel (written by
+            // WorktreeService during worktree creation). If so, preserve it —
+            // don't downgrade to the standard sentinel.
+            if (!worktreeTask && existing.includes(AGENTS_MD_BEGIN) && existing.includes('**Active Task:**')) {
+                this.logger.info('chatParticipant', 'Preserving existing worktree-enhanced AGENTS.md sentinel');
+                return agentsUri;
+            }
+
             // Choose the appropriate sentinel section
             const section = worktreeTask
                 ? buildWorktreeAgentsMdSection(worktreeTask.title, worktreeTask.taskRelPath)
@@ -198,16 +210,7 @@ export class ChatParticipant {
      * the enhanced AGENTS.md sentinel accordingly. Called on extension activation.
      */
     async syncWorktreeAgentsMd(): Promise<void> {
-        // Find a task whose worktree.path matches the current workspace
-        const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-        if (!workspaceFolder) { return; }
-
-        const currentPath = workspaceFolder.uri.fsPath;
-        const allTasks = this.taskStore.getAll();
-        const linkedTask = allTasks.find(t =>
-            t.worktree && this.normalisePath(t.worktree.path) === this.normalisePath(currentPath),
-        );
-
+        const linkedTask = this.findLinkedWorktreeTask();
         if (linkedTask) {
             const taskUri = this.taskStore.getTaskUri(linkedTask.id);
             const taskRelPath = vscode.workspace.asRelativePath(taskUri);
@@ -220,6 +223,24 @@ export class ChatParticipant {
     private normalisePath(p: string): string {
         const normalised = p.replace(/\\/g, '/').replace(/\/+$/, '');
         return process.platform === 'win32' ? normalised.toLowerCase() : normalised;
+    }
+
+    /** Check if the current workspace IS the worktree for the given task. */
+    private isInTaskWorktree(task: { worktree?: { path: string } }): boolean {
+        if (!task.worktree) { return false; }
+        const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+        if (!workspaceFolder) { return false; }
+        return this.normalisePath(workspaceFolder.uri.fsPath) === this.normalisePath(task.worktree.path);
+    }
+
+    /** Find a task whose worktree.path matches the current workspace. */
+    findLinkedWorktreeTask(): ReturnType<TaskStore['get']> {
+        const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+        if (!workspaceFolder) { return undefined; }
+        const currentPath = workspaceFolder.uri.fsPath;
+        return this.taskStore.getAll().find(t =>
+            t.worktree && this.normalisePath(t.worktree.path) === this.normalisePath(currentPath),
+        );
     }
 
     /**
@@ -293,6 +314,14 @@ export class ChatParticipant {
         const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
 
         if (!prompt) {
+            // In a worktree workspace with no args — detect linked task and show reminder
+            const linkedTask = this.findLinkedWorktreeTask();
+            if (linkedTask) {
+                response.markdown(`Working on task: **${linkedTask.title}**\n\n`);
+                response.markdown(WORKTREE_WORKSPACE_HINT);
+                return;
+            }
+
             // No task name — list active tasks
             const titles = this.getActiveTaskTitles();
             if (titles.length === 0) {
@@ -371,6 +400,9 @@ export class ChatParticipant {
         // Show worktree status
         if (task.worktree) {
             response.markdown(`Worktree: \`${task.worktree.path}\` (branch \`${task.worktree.branch}\`)\n\n`);
+            if (this.isInTaskWorktree(task)) {
+                response.markdown(WORKTREE_WORKSPACE_HINT);
+            }
         }
 
         // Hint when enforce is on and no worktree
@@ -380,6 +412,7 @@ export class ChatParticipant {
         }
 
         response.markdown('The conversation for this task happens in the task file above.\n\n');
+        response.markdown('To continue here, type **plan**, **todo**, **implement** (or a combination e.g. `todo implement`)\n\n');
         response.markdown('Use `@kanban /refresh` to re-inject context if the agent loses track, or `@kanban /worktree` to create an isolated worktree.');
     }
 
@@ -391,6 +424,14 @@ export class ChatParticipant {
         prompt: string,
         response: vscode.ChatResponseStream,
     ): Promise<void> {
+        // Auto-detect linked task in worktree workspace
+        if (!this.lastSelectedTaskId) {
+            const linkedTask = this.findLinkedWorktreeTask();
+            if (linkedTask) {
+                this.lastSelectedTaskId = linkedTask.id;
+            }
+        }
+
         if (!this.lastSelectedTaskId) {
             const titles = this.getActiveTaskTitles();
             if (titles.length === 0) {
@@ -462,11 +503,15 @@ export class ChatParticipant {
         response.markdown(`**REFRESH** — Task: **${task.title}**\n\n`);
         response.markdown(`Task file: \`${taskRelPath}\`\n\n`);
 
+        if (this.isInTaskWorktree(task)) {
+            response.markdown(WORKTREE_WORKSPACE_HINT);
+        }
+
         if (prompt.trim()) {
             response.markdown(`Additional context: ${prompt.trim()}\n\n`);
         }
 
-        response.markdown('Type **go** in the chat to begin.');
+        response.markdown('Type **plan**, **todo**, **implement** (or a combination e.g. `todo implement`) to proceed.');
     }
 
     /**
@@ -483,6 +528,14 @@ export class ChatParticipant {
         if (!isGit) {
             response.markdown('This workspace is not a git repository. Worktree support requires git.');
             return;
+        }
+
+        // Auto-detect linked task in worktree workspace
+        if (!this.lastSelectedTaskId) {
+            const linkedTask = this.findLinkedWorktreeTask();
+            if (linkedTask) {
+                this.lastSelectedTaskId = linkedTask.id;
+            }
         }
 
         if (!this.lastSelectedTaskId) {
@@ -516,7 +569,10 @@ export class ChatParticipant {
             const exists = await this.worktreeService!.exists(task.worktree.path);
             if (exists) {
                 response.markdown(`Task **${task.title}** already has a worktree at \`${task.worktree.path}\`.\n\n`);
-                response.markdown('Use `@kanban /worktree open` to open it, or `@kanban /worktree remove` to remove it.');
+                response.markdown('Use `@kanban /worktree open` to open it, or `@kanban /worktree remove` to remove it.\n\n');
+                if (this.isInTaskWorktree(task)) {
+                    response.markdown(WORKTREE_WORKSPACE_HINT);
+                }
                 return;
             }
             // Worktree metadata exists but directory is gone — clean up and recreate
@@ -533,6 +589,16 @@ export class ChatParticipant {
             // Update task frontmatter with worktree info
             task.worktree = worktreeInfo;
             await this.taskStore.save(task);
+
+            // Copy updated task file (with worktree metadata) into the worktree
+            // so the extension can detect the worktree association on activation
+            try {
+                const savedBytes = await vscode.workspace.fs.readFile(taskUri);
+                const worktreeTaskUri = vscode.Uri.joinPath(vscode.Uri.file(worktreeInfo.path), taskRelPath);
+                await vscode.workspace.fs.writeFile(worktreeTaskUri, savedBytes);
+            } catch (err: any) {
+                this.logger.warn('chatParticipant', `Failed to sync task file to worktree: ${err.message}`);
+            }
 
             response.markdown(`✅ Worktree created:\n\n`);
             response.markdown(`- **Branch:** \`${worktreeInfo.branch}\`\n`);
@@ -565,7 +631,10 @@ export class ChatParticipant {
             return;
         }
 
-        response.markdown(`Opening worktree for **${task.title}** at \`${task.worktree.path}\`...\n`);
+        response.markdown(`Opening worktree for **${task.title}** at \`${task.worktree.path}\`...\n\n`);
+        if (this.isInTaskWorktree(task)) {
+            response.markdown(WORKTREE_WORKSPACE_HINT);
+        }
         await this.worktreeService!.openInVSCode(task.worktree.path);
     }
 

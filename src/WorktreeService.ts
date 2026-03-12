@@ -75,9 +75,10 @@ export class WorktreeService {
 
         this.logger.info('worktreeService', `Creating worktree: branch=${branch}, path=${worktreePath}`);
 
-        // 1. Auto-commit task files
+        // 1. Auto-commit task files — returns commit hash if a commit was made
+        let startPoint: string | undefined;
         try {
-            await this.autoCommitTaskFiles(taskTitle);
+            startPoint = await this.autoCommitTaskFiles(taskTitle, taskRelPath);
         } catch (err: any) {
             this.logger.warn('worktreeService', `Auto-commit failed: ${err.message}`);
             vscode.window.showWarningMessage(
@@ -85,9 +86,17 @@ export class WorktreeService {
             );
         }
 
-        // 2. Create worktree + branch
+        // Fall back to HEAD if no commit was made (files already committed or no changes)
+        if (!startPoint) {
+            const { stdout } = await this.git(['rev-parse', 'HEAD']);
+            startPoint = stdout.trim();
+        }
+
+        this.logger.info('worktreeService', `Worktree start-point: ${startPoint}`);
+
+        // 2. Create worktree + branch, pinned to the exact commit
         try {
-            await this.git(['worktree', 'add', '-b', branch, worktreePath]);
+            await this.git(['worktree', 'add', '-b', branch, worktreePath, startPoint]);
         } catch (err: any) {
             // Branch may already exist — try without -b
             if (err.message?.includes('already exists')) {
@@ -185,33 +194,61 @@ export class WorktreeService {
 
     /**
      * Stage and commit .agentkanban/ task files if they have untracked/modified changes.
-     * Shows a notification to the user.
+     * When `taskRelPath` is provided, only that file (and its sibling todo file)
+     * are targeted; otherwise all of `.agentkanban/` is committed.
+     *
+     * Returns the commit hash on success, or `undefined` if nothing to commit.
      */
-    async autoCommitTaskFiles(taskTitle: string): Promise<boolean> {
-        // Check for changes in .agentkanban/
+    async autoCommitTaskFiles(taskTitle: string, taskRelPath?: string): Promise<string | undefined> {
+        // -uall ensures individual files inside untracked directories are listed
+        const pathSpecs = taskRelPath
+            ? [taskRelPath, taskRelPath.replace(/\btask_/, 'todo_')]
+            : ['.agentkanban/'];
+
         const { stdout: status } = await this.git([
-            'status', '--porcelain', '--', '.agentkanban/',
+            'status', '--porcelain', '-uall', '--', ...pathSpecs,
         ]);
 
         if (!status.trim()) {
             this.logger.info('worktreeService', 'No uncommitted task file changes');
-            return false;
+            return undefined;
         }
 
         this.logger.info('worktreeService', `Auto-committing task files:\n${status}`);
 
-        // Stage all .agentkanban/ changes
-        await this.git(['add', '.agentkanban/']);
+        // Extract actual changed paths from porcelain output (avoids fatal
+        // "pathspec did not match" when e.g. the todo_ sibling doesn't exist).
+        const changedFiles = status.trim().split('\n')
+            .map(line => line.slice(3).trim())
+            .filter(Boolean);
+
+        // Stage only the files that actually have changes
+        await this.git(['add', '--', ...changedFiles]);
 
         // Commit with a descriptive message
         const message = `agentkanban: add task "${taskTitle}"`;
         await this.git(['commit', '-m', message]);
 
+        // Get the commit hash for verification
+        const { stdout: hashOut } = await this.git(['rev-parse', 'HEAD']);
+        const commitHash = hashOut.trim();
+        this.logger.info('worktreeService', `Committed task files: ${commitHash}`);
+
+        // Verify the task file is in the commit
+        if (taskRelPath) {
+            try {
+                await this.git(['cat-file', '-e', `${commitHash}:${taskRelPath}`]);
+                this.logger.info('worktreeService', `Verified ${taskRelPath} exists in commit ${commitHash}`);
+            } catch {
+                this.logger.warn('worktreeService', `Task file ${taskRelPath} NOT found in commit ${commitHash} — continuing anyway`);
+            }
+        }
+
         vscode.window.showInformationMessage(
             `Agent Kanban: Committed task files before creating worktree.`,
         );
 
-        return true;
+        return commitHash;
     }
 
     // ── Worktree AGENTS.md ───────────────────────────────────────────────────

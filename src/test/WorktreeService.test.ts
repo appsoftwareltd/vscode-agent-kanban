@@ -151,37 +151,106 @@ describe('WorktreeService', () => {
     });
 
     describe('autoCommitTaskFiles', () => {
-        it('should commit when there are uncommitted changes', async () => {
+        it('should commit and return commit hash when there are uncommitted changes', async () => {
             const gitCalls: string[][] = [];
             execFileMock.mockImplementation(async (_file: any, args: any, _opts: any) => {
                 gitCalls.push(args);
-                if (args.includes('--porcelain') && args.includes('.agentkanban/')) {
+                if (args.includes('--porcelain') && args.includes('-uall')) {
                     return { stdout: 'A  .agentkanban/tasks/todo/task_001.md\n', stderr: '' };
+                }
+                if (args[0] === 'rev-parse' && args[1] === 'HEAD') {
+                    return { stdout: 'abc123def456\n', stderr: '' };
                 }
                 return { stdout: '', stderr: '' };
             });
 
             const result = await service.autoCommitTaskFiles('Test task');
-            expect(result).toBe(true);
+            expect(result).toBe('abc123def456');
 
-            // Should have called git add and git commit
-            expect(gitCalls.some(args => args.includes('add') && args.includes('.agentkanban/'))).toBe(true);
+            // Should have used -uall flag
+            expect(gitCalls.some(args => args.includes('-uall'))).toBe(true);
+            // git add should use parsed paths from status output
+            const addCall = gitCalls.find(args => args.includes('add'));
+            expect(addCall).toContain('.agentkanban/tasks/todo/task_001.md');
             expect(gitCalls.some(args => args.includes('commit'))).toBe(true);
+            // Should have fetched the commit hash
+            expect(gitCalls.some(args => args[0] === 'rev-parse' && args[1] === 'HEAD')).toBe(true);
         });
 
-        it('should skip commit when no changes', async () => {
+        it('should verify task file in commit when taskRelPath is provided', async () => {
+            const gitCalls: string[][] = [];
+            const taskPath = '.agentkanban/tasks/doing/task_001.md';
+            execFileMock.mockImplementation(async (_file: any, args: any, _opts: any) => {
+                gitCalls.push(args);
+                if (args.includes('--porcelain') && args.includes(taskPath)) {
+                    return { stdout: `?? ${taskPath}\n`, stderr: '' };
+                }
+                if (args[0] === 'rev-parse' && args[1] === 'HEAD') {
+                    return { stdout: 'abc123\n', stderr: '' };
+                }
+                return { stdout: '', stderr: '' };
+            });
+
+            const result = await service.autoCommitTaskFiles('Test task', taskPath);
+            expect(result).toBe('abc123');
+
+            // Status should target the specific file and its todo sibling
+            const statusCall = gitCalls.find(args => args.includes('--porcelain'));
+            expect(statusCall).toContain(taskPath);
+            expect(statusCall).not.toContain('.agentkanban/');
+            const todoPath = taskPath.replace(/\btask_/, 'todo_');
+            expect(statusCall).toContain(todoPath);
+
+            // git add should use the parsed path from status (not the raw pathSpecs)
+            const addCall = gitCalls.find(args => args.includes('add'));
+            expect(addCall).toContain(taskPath);
+            // Should NOT contain the missing todo file
+            expect(addCall).not.toContain(todoPath);
+
+            // Should have verified via cat-file
+            expect(gitCalls.some(args => args[0] === 'cat-file' && args[1] === '-e')).toBe(true);
+        });
+
+        it('should only add files reported by status (skip missing todo file)', async () => {
+            const gitCalls: string[][] = [];
+            const taskPath = '.agentkanban/tasks/todo/task_002.md';
+            const todoPath = taskPath.replace(/\btask_/, 'todo_');
+            execFileMock.mockImplementation(async (_file: any, args: any, _opts: any) => {
+                gitCalls.push(args);
+                if (args.includes('--porcelain')) {
+                    // Only the task file appears — todo doesn't exist
+                    return { stdout: `?? ${taskPath}\n`, stderr: '' };
+                }
+                if (args[0] === 'rev-parse' && args[1] === 'HEAD') {
+                    return { stdout: 'def456\n', stderr: '' };
+                }
+                return { stdout: '', stderr: '' };
+            });
+
+            const result = await service.autoCommitTaskFiles('Test task', taskPath);
+            expect(result).toBe('def456');
+
+            const addCall = gitCalls.find(args => args.includes('add'));
+            expect(addCall).toContain(taskPath);
+            expect(addCall).not.toContain(todoPath);
+        });
+
+        it('should return undefined when no changes', async () => {
             execFileMock.mockResolvedValue({ stdout: '', stderr: '' });
 
             const result = await service.autoCommitTaskFiles('Test task');
-            expect(result).toBe(false);
+            expect(result).toBeUndefined();
         });
     });
 
     describe('create', () => {
-        it('should create worktree and return WorktreeInfo', async () => {
+        it('should create worktree pinned to HEAD and return WorktreeInfo', async () => {
             const gitCalls: string[][] = [];
             execFileMock.mockImplementation(async (_file: any, args: any, _opts: any) => {
                 gitCalls.push(args);
+                if (args[0] === 'rev-parse' && args[1] === 'HEAD') {
+                    return { stdout: 'abc123HEAD\n', stderr: '' };
+                }
                 return { stdout: '', stderr: '' };
             });
 
@@ -191,13 +260,19 @@ describe('WorktreeService', () => {
             expect(info.path).toContain('20260310_100000_abc_test');
             expect(info.created).toBeTruthy();
 
-            // Should have called git worktree add
-            expect(gitCalls.some(args => args[0] === 'worktree' && args[1] === 'add')).toBe(true);
+            // Should have called git worktree add with a start-point
+            const wtAddCall = gitCalls.find(args => args[0] === 'worktree' && args[1] === 'add');
+            expect(wtAddCall).toBeDefined();
+            // Last argument should be the start-point (commit hash)
+            expect(wtAddCall![wtAddCall!.length - 1]).toBe('abc123HEAD');
         });
 
         it('should retry without -b when branch already exists', async () => {
             let worktreeAddCount = 0;
             execFileMock.mockImplementation(async (_file: any, args: any, _opts: any) => {
+                if (args[0] === 'rev-parse' && args[1] === 'HEAD') {
+                    return { stdout: 'deadbeef\n', stderr: '' };
+                }
                 if (args[0] === 'worktree' && args[1] === 'add') {
                     worktreeAddCount++;
                     if (args.includes('-b')) {
@@ -259,7 +334,7 @@ describe('WorktreeService', () => {
                     // Has changes — then add/commit will fail
                     return { stdout: '?? .agentkanban/tasks/todo/task.md\n', stderr: '' };
                 }
-                if (args.includes('add') && args.includes('.agentkanban/')) {
+                if (args.includes('add') && args.includes('.agentkanban/tasks/todo/task.md')) {
                     throw new Error('git add failed');
                 }
                 return { stdout: '', stderr: '' };

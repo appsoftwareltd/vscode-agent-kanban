@@ -494,6 +494,16 @@ export class KanbanEditorPanel {
                     const worktreeInfo = await this._worktreeService.create(task.id, task.title, taskRelPath);
                     task.worktree = worktreeInfo;
                     await this._taskStore.save(task);
+
+                    // Copy updated task file (with worktree metadata) into the worktree
+                    try {
+                        const savedBytes = await vscode.workspace.fs.readFile(taskUri);
+                        const worktreeTaskUri = vscode.Uri.joinPath(vscode.Uri.file(worktreeInfo.path), taskRelPath);
+                        await vscode.workspace.fs.writeFile(worktreeTaskUri, savedBytes);
+                    } catch (syncErr: any) {
+                        this._logger.warn('kanbanEditorPanel', `Failed to sync task file to worktree: ${syncErr.message}`);
+                    }
+
                     await this._worktreeService.openInVSCode(worktreeInfo.path);
                 } catch (err: any) {
                     vscode.window.showErrorMessage(`Failed to create worktree: ${err.message}`);

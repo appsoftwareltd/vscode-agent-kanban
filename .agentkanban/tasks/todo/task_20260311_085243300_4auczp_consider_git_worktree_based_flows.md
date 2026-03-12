@@ -673,7 +673,325 @@ OK - I can see the agent file is updated now
 
 The uncommited task file is still not committed
 
-If we are in a worktree with the agents.md modifications applied - /task should show a message saying they dont need to run it unless they temporarilily want to switch to another task (say in another copilot thread)
+If we are in a worktree with the agents.md modifications applied - /task should run, but remind the user that they dont need to run it unless they temporarilily want to switch to another task (say in another copilot thread)
+
+[agent]
+
+## Plan: Iteration 4 — Fix Auto-Commit + Worktree-Aware /task + INSTRUCTION.md Update
+
+### Investigation Summary
+
+I traced through the full auto-commit code path and investigated the git state:
+
+- `git status --porcelain -- .agentkanban/` **does** show modified task files in the current workspace
+- git identity is configured (user.name + user.email)
+- No staged conflicts
+- `.agentkanban/` is NOT gitignored (only `logs/` within it)
+- **No** `agentkanban:` commit messages exist in the log — the auto-commit has **never succeeded**
+
+The existing worktree at `worktree-test` was created at commit `3219ccf` (before the worktree feature code existed), so it was never a valid test of the auto-commit path.
+
+### Root Cause Analysis: Auto-Commit
+
+The code looks correct on paper but there are three likely failure modes I identified:
+
+1. **Race condition with task file save:** When the user creates a task and immediately runs `/worktree`, the task file may not yet be flushed to disk by VS Code's filesystem layer. `git status` then sees nothing new.
+
+2. **Swallowed commit failure:** `autoCommitTaskFiles` logs warnings via `this.logger.warn()` — but if logging isn't enabled, these vanish. The caller catches the error and shows a `showWarningMessage`, but VS Code warning messages can be easily missed (they appear briefly in the corner).
+
+3. **git add .agentkanban/ is too broad:** Staging the entire `.agentkanban/` directory means the commit could include INSTRUCTION.md, board.yaml, memory.md, and other managed files that happen to be dirty. If those files are currently being written by the extension (race), `git add` could stage a partial write.
+
+### Fix Plan
+
+#### A. Make auto-commit more targeted and robust
+
+**Files:** `WorktreeService.ts`
+
+1. **Target the specific task file:** Instead of `git add .agentkanban/`, add only the specific task file and its todo file. Pass `taskRelPath` to `autoCommitTaskFiles()`.
+2. **Explicit save-and-flush before checking status:** Before running `git status`, call `taskStore.save(task)` to ensure the file is on disk. The caller already has the task — pass it through.
+3. **Verify commit succeeded:** After `git commit`, run `git log --oneline -1` and log the result. If the commit message doesn't match, surface an error.
+4. **Make the warning impossible to miss:** If the commit fails, show an **error** message (not warning), and include a "Retry" button that re-runs the commit.
+
+Actually, the cleaner approach for #1 and #2: change the `create()` method signature to accept the task's relative path, which it already does. Then have `autoCommitTaskFiles()` target THAT file specifically:
+
+```typescript
+async autoCommitTaskFiles(taskTitle: string, taskRelPath?: string): Promise<boolean> {
+    const pathSpec = taskRelPath ? taskRelPath : '.agentkanban/';
+    const { stdout: status } = await this.git([
+        'status', '--porcelain', '-uall', '--', pathSpec,
+    ]);
+    if (!status.trim()) {
+        this.logger.info('worktreeService', 'No uncommitted task file changes');
+        return false;
+    }
+    // Stage just the task file and .agentkanban/tasks/
+    await this.git(['add', '--', pathSpec]);
+    // Also stage the todo file if it exists
+    if (taskRelPath) {
+        const todoPath = taskRelPath.replace(/\/task_/, '/todo_');
+        try { await this.git(['add', '--', todoPath]); } catch { /* may not exist */ }
+    }
+    const message = `agentkanban: add task "${taskTitle}"`;
+    await this.git(['commit', '-m', message]);
+    ...
+}
+```
+
+Key changes:
+- Add `-uall` flag to `git status` to ensure untracked files in new/untracked directories are individually listed
+- Target the specific task file path instead of the whole `.agentkanban/` directory
+- Pass the task path through from `create()`
+
+#### B. `/task` worktree awareness
+
+**Files:** `ChatParticipant.ts`
+
+Current `handleTask()` shows worktree info but doesn't detect whether we're INSIDE the worktree. Need to:
+
+1. After selecting a task, detect if the current workspace IS the task's worktree (compare `workspaceFolder.uri.fsPath` with `task.worktree.path`)
+2. If we ARE in the worktree: show a message like *"You're working in the worktree for this task. AGENTS.md already injects the task context permanently. You only need `/task` if switching to a different task temporarily (e.g. in another Copilot thread)."*
+3. If we are NOT in the worktree but the task HAS a worktree: add *"Use `@kanban /worktree open` to switch to the worktree."*
+4. If the task has no worktree: current behaviour (show normal output)
+
+Implementation: add a `isInWorktree()` check:
+
+```typescript
+private isInTaskWorktree(task: Task): boolean {
+    if (!task.worktree) return false;
+    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+    if (!workspaceFolder) return false;
+    return this.normalisePath(workspaceFolder.uri.fsPath) === this.normalisePath(task.worktree.path);
+}
+```
+
+Then in `handleTask()`, after showing basic info:
+
+```typescript
+if (this.isInTaskWorktree(task)) {
+    response.markdown('ℹ️ You are in the worktree for this task. AGENTS.md permanently injects context — no need for `/task` or `/refresh` unless switching tasks temporarily.\n\n');
+}
+```
+
+#### C. Update `assets/INSTRUCTION.md` — remove old verb commands
+
+**Files:** `assets/INSTRUCTION.md`
+
+The bundled INSTRUCTION.md still references `/plan`, `/todo`, `/implement` commands:
+
+```markdown
+Use `@kanban /plan`, `@kanban /todo`, or `@kanban /implement` in chat...
+### Verbs
+...```
+
+These need to be updated to reference `/refresh` only. The verb concepts (plan, todo, implement) remain as workflow *phases*, but they're no longer separate commands. The agent should understand:
+- **Plan** → discuss and plan in the task file
+- **Todo** → create/update TODO checklist
+- **Implement** → write code per plan/TODOs
+
+But the mechanism to refresh context is `/refresh` (or nothing, in worktree mode where AGENTS.md does it permanently).
+
+Update the "Command Rules" section:
+- Replace verb command references with `/refresh`
+- Keep the plan/todo/implement workflow descriptions as guidance for the agent, not as commands
+- Add mention of worktree mode where context is permanent
+
+#### D. Tests
+
+- **WorktreeService:** Test `autoCommitTaskFiles` with specific task path (targeted staging)
+- **ChatParticipant:** Test `handleTask` detects worktree workspace and shows appropriate message
+- **ChatParticipant:** Test `handleTask` in non-worktree workspace shows standard output
+
+[user]
+
+OK agreed. Add logging so I can report logs for you if there are further issues
+
+[agent]
+
+## Implementation: Iteration 4
+
+All three items implemented and validated (206 tests pass, build succeeds).
+
+### A. Fix autoCommitTaskFiles (WorktreeService.ts)
+
+- Added `taskRelPath?: string` parameter to `autoCommitTaskFiles()`
+- When `taskRelPath` is provided, targets only that file and its sibling `todo_` file instead of entire `.agentkanban/`
+- Added `-uall` flag to `git status` so individual files in untracked directories are properly detected
+- Updated `create()` to pass `taskRelPath` through to `autoCommitTaskFiles()`
+- Logging already present via `this.logger.info/warn` calls
+
+### B. Worktree-aware /task (ChatParticipant.ts)
+
+- Added `isInTaskWorktree(task)` private method — compares normalised workspace path with `task.worktree.path`
+- Updated `handleTask()` to show "ℹ️ You are in the worktree for this task..." message when the workspace IS the worktree
+- Reminds user that `/task` and `/refresh` aren't needed since AGENTS.md permanently injects context
+
+### C. INSTRUCTION.md template update (assets/INSTRUCTION.md)
+
+- Replaced "### Verbs" section with "### Phases" — plan/todo/implement remain as workflow guidance, not commands
+- Updated "### Flow" to reference `@kanban /refresh` instead of `/plan /todo /implement`
+- Added worktree mode mention: "In a worktree workspace, AGENTS.md permanently contains the task reference"
+
+### D. Tests
+
+- **WorktreeService.test.ts:** Updated `autoCommitTaskFiles` tests to verify `-uall` flag; added test for specific `taskRelPath` targeting (verifies pathspecs include both task and todo file)
+- **ChatParticipant.test.ts:** Added two tests: "in-worktree hint when workspace IS the task worktree" and "NOT show in-worktree hint when workspace differs"
+
+[user]
+
+Test feed back. I have tested and something is preventing the git autocommit. I was able to capture this notification (screenshot) before the change of workspace. No logs are being produced - I would expect the logs folder to be under .agentkanban/logs - logging is enabled in the settings
+
+Can we set up a launch setting to ensure the debug flag is on and have that checked in debugging.
+
+```
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            ...
+            "preLaunchTask": "${defaultBuildTask}",
+            "env": {
+                "VSCODE_AGENT_KANBAN_DEBUG": "1"
+            }
+        }
+    ]
+}
+```
+
+[agent]
+
+## Iteration 4 Bugfix — Auto-commit "pathspec did not match" 
+
+**Root cause:** `git add -- task_file.md todo_file.md` fails fatally when the `todo_` sibling file doesn't exist yet (`fatal: pathspec 'todo_...' did not match any files`). `git status` handles missing paths silently, but `git add` does not.
+
+**Fix:** Instead of passing the raw pathSpecs array to `git add`, we now parse the actual changed file paths from the `git status --porcelain` output and pass **only those** to `git add`. This way:
+- Status still queries both task file + todo sibling (catches either)
+- Add only stages files that actually have changes (no fatal errors)
+
+**Changes:**
+- `WorktreeService.ts` — `autoCommitTaskFiles()`: parse `changedFiles` from status output, use those for `git add`
+- `WorktreeService.test.ts` — added "only add files reported by status (skip missing todo file)" test; updated existing tests for new add behaviour
+- `.vscode/launch.json` — added `AGENT_KANBAN_DEBUG=1` env to "Run Extension" configuration for out-of-the-box debug logging (note: the actual env var is `AGENT_KANBAN_DEBUG`, not `VSCODE_AGENT_KANBAN_DEBUG`)
+
+207 tests pass, build succeeds.
+
+[user]
+
+I have pasted the logs. The first worktree create from one task appeared to succeed, and I can see the task file in the commit history - but when the new workspace opened, the commit was not present in the workspace branch.
+
+On the second attempt it reported it could not find the file.
+
+This appears to be a race condition. Can we block until we can confirm that the file is present in the commit history from the recent commit (by hash) ... and only then create the new workspace
+
+[agent]
+
+## Iteration 4 Bugfix 2 — Race condition: worktree branch missing committed task files
+
+**Root cause:** `git worktree add -b <branch> <path>` creates a new branch from HEAD — but if the commit from `autoCommitTaskFiles` hasn't fully propagated to HEAD (or another process touches the ref), the new branch may be based on a stale HEAD.
+
+**Fix — commit-hash pinning:**
+
+1. `autoCommitTaskFiles()` now returns the commit hash (`git rev-parse HEAD`) after committing, or `undefined` if nothing to commit
+2. After commit, verifies the task file exists in the commit via `git cat-file -e <hash>:<path>`
+3. `create()` captures the hash and passes it as an **explicit start-point** to `git worktree add -b <branch> <path> <commit>` — ensuring the worktree branch is based on *exactly* the commit that includes the task files
+4. If no commit was made (files already committed), falls back to current HEAD
+
+**Changes:**
+- `WorktreeService.ts` — `autoCommitTaskFiles()` returns `string | undefined` (commit hash); adds `rev-parse HEAD` + `cat-file -e` verification; `create()` captures hash and uses as start-point
+- `WorktreeService.test.ts` — updated all tests: commit returns hash, create verifies start-point argument
+
+207 tests pass, build succeeds.
+
+[user]
+
+Test feedback. The commit issue is resolved now.
+
+When I create the new work tree and VS code switches over, I find that AGENTS.md is not modified for the specific task file (see C:\Users\Gareth\src\as-notes-demo-notes-worktrees\20260312_085929032_tzsgiu_test_task_7\AGENTS.md)
+
+If the user types /task or /refresh while in a work tree, they should be reminded that in worktree directories they do not need to
+
+[agent]
+
+## Implementation: Iteration 5 — Fix Worktree AGENTS.md + Reminders
+
+### Root Cause Found
+
+The AGENTS.md was being correctly written by `writeWorktreeAgentsMd()` during worktree creation, but then **overwritten by the standard sentinel sync on activation**:
+
+1. `extension.ts` line 199: `syncAgentsMdSection()` called WITHOUT params → wrote standard sentinel, overwriting the enhanced one
+2. `extension.ts` line 201: `syncWorktreeAgentsMd()` tried to find task via `worktree.path` in frontmatter → **failed** because the task file in the worktree was committed BEFORE `task.worktree` was saved to frontmatter → did nothing
+
+Additionally, the `handleTask()` handler also calls `syncAgentsMdSection()` without params, which would overwrite on every `/task` command.
+
+### Fixes Applied
+
+**A. `syncAgentsMdSection()` preserves enhanced sentinel** (`ChatParticipant.ts`)
+
+When called WITHOUT `worktreeTask` params, the method now checks if the existing AGENTS.md already contains `**Active Task:**` within the sentinel block. If so, it returns early without writing — preserving the worktree-enhanced sentinel. When called WITH `worktreeTask` params (explicit worktree sync), it always updates.
+
+**B. Task file synced to worktree after creation** (`ChatParticipant.ts` + `KanbanEditorPanel.ts`)
+
+Both worktree creation paths (chat command and board button) now copy the updated task file (containing `worktree` metadata in frontmatter) into the worktree directory after saving. This ensures:
+- `syncWorktreeAgentsMd()` can find the linked task on subsequent activations
+- `isInTaskWorktree()` correctly detects the worktree association
+
+**C. `/refresh` worktree reminder** (`ChatParticipant.ts`)
+
+Added the same `isInTaskWorktree()` check and message to the `/refresh` handler that `/task` already had. Users in a worktree now see the reminder on both commands.
+
+### Tests Added (212 total, all passing)
+
+- `syncAgentsMdSection`: preserve worktree-enhanced sentinel when called without params
+- `syncAgentsMdSection`: overwrite standard sentinel normally
+- `syncAgentsMdSection`: overwrite enhanced sentinel when called WITH worktreeTask params
+- `/refresh`: show in-worktree hint when in task worktree
+- `/refresh`: NOT show hint when not in worktree
 
 
+[user]
+
+The AGENTS.md looks OK.
+
+There is no reminder message from the particpant commands that the user is in a worktree branch
+
+/task
+/refresh
+/worktree 
+
+Should all finish with a message reminding the user that they are in a work tree and they do not need to use these commands (Unless they use /task in which case /task and /refresh would then be appropriate - but phrase this sccinctly)
+
+[agent]
+
+## Implementation: Iteration 6 — Worktree Auto-Detection + Reminder Messages
+
+### Root Cause
+
+When VS Code opens a worktree workspace, the extension activates fresh — `lastSelectedTaskId` is `undefined` (in-memory state). So `/refresh`, `/task` (no args), and `/worktree` all hit "No task selected" early returns before reaching any worktree detection logic. The worktree hint existed in code but was unreachable.
+
+### Fixes Applied
+
+**A. `findLinkedWorktreeTask()` method** (`ChatParticipant.ts`)
+
+Extracted the task-by-worktree-path matching logic (previously duplicated in `syncWorktreeAgentsMd()`) into a reusable method. Scans all tasks for one whose `worktree.path` matches the current workspace folder.
+
+**B. Auto-detection in all three handlers** (`ChatParticipant.ts`)
+
+- `/refresh`: Before "No task selected" early return, calls `findLinkedWorktreeTask()`. If found, auto-selects and proceeds with full refresh.
+- `/task` (no args): Detects linked task in worktree, shows task name + reminder instead of listing tasks.
+- `/worktree`: Before "No task selected" early return, calls `findLinkedWorktreeTask()`. If found, auto-selects and proceeds with subcommand.
+
+**C. Consistent worktree reminder** (`ChatParticipant.ts`)
+
+All commands use a shared `WORKTREE_WORKSPACE_HINT` constant:
+> ℹ️ **Worktree workspace** — AGENTS.md permanently provides task context. You don't need these commands unless you use `/task` to switch tasks.
+
+Shown on: `/task` (worktree detected), `/refresh` (worktree detected), `/worktree` create (already exists + in worktree), `/worktree open` (in worktree).
+
+**D. Refactored `syncWorktreeAgentsMd()`** now uses `findLinkedWorktreeTask()`.
+
+### Tests Added (216 total, all passing)
+
+- `/refresh` auto-detects worktree task when `lastSelectedTaskId` is unset
+- `/task` (no args) auto-detects worktree task and shows reminder
+- `/worktree` auto-detects worktree task when `lastSelectedTaskId` is unset
+- `/worktree open` shows reminder when already in worktree
 
