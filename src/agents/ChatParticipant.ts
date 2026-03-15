@@ -412,12 +412,6 @@ export class ChatParticipant {
             }
         }
 
-        // Hint when enforce is on and no worktree
-        const enforceWorktrees = vscode.workspace.getConfiguration('agentKanban').get<boolean>('enforceWorktrees', false);
-        if (enforceWorktrees && this.worktreeService && !task.worktree) {
-            response.markdown('⚠️ Worktree enforcement is on. Create a worktree before using verb commands.\n\n');
-        }
-
         response.markdown('The conversation for this task happens in the task file above.\n\n');
         response.markdown('To continue here, type **plan**, **todo**, **implement** (or a combination e.g. `todo implement`)\n\n');
         response.markdown('Use `@kanban /refresh` to re-inject context if the agent loses track, or `@kanban /worktree` to create an isolated worktree.');
@@ -461,17 +455,6 @@ export class ChatParticipant {
         }
 
         this.logger.info('chatParticipant', `/refresh on: ${task.id} (${task.title})`);
-
-        // Check enforceWorktrees setting
-        const enforceWorktrees = vscode.workspace.getConfiguration('agentKanban').get<boolean>('enforceWorktrees', false);
-        if (enforceWorktrees && this.worktreeService && !task.worktree) {
-            const isGit = await this.worktreeService.isGitRepo();
-            if (isGit) {
-                response.markdown('⚠️ **Worktree required.** The `agentKanban.enforceWorktrees` setting is enabled.\n\n');
-                response.markdown('Use `@kanban /worktree` to create a worktree for this task first.\n');
-                return;
-            }
-        }
 
         // Sync INSTRUCTION.md and AGENTS.md section from bundled templates
         const instrUri = this.getIsInitialised() ? await this.syncInstructionFile() : undefined;

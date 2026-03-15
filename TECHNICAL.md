@@ -256,11 +256,10 @@ When `agentKanban.customInstructionFile` is set, `handleTask()` resolves the pat
 1. If `lastSelectedTaskId` is not set: auto-detect linked task via `findLinkedWorktreeTask()` (worktree workspace support)
 2. If still no task: list active tasks and prompt user to run `/task` first
 3. Look up task; if done/missing, clear selection and prompt re-selection
-4. Check `enforceWorktrees` setting — block if enabled and no worktree exists
-5. Sync INSTRUCTION.md and AGENTS.md (uses worktree-enhanced sentinel if task has a worktree)
-6. Attach INSTRUCTION.md and task file as `response.reference()` URIs for persistent context
-7. Open the task file in editor (preserveFocus keeps cursor in chat input)
-8. Output: INSTRUCTION.md reference, **REFRESH** label + task title, task file path, worktree hint (if applicable), additional context
+4. Sync INSTRUCTION.md and AGENTS.md (uses worktree-enhanced sentinel if task has a worktree)
+5. Attach INSTRUCTION.md and task file as `response.reference()` URIs for persistent context
+6. Open the task file in editor (preserveFocus keeps cursor in chat input)
+7. Output: INSTRUCTION.md reference, **REFRESH** label + task title, task file path, worktree hint (if applicable), additional context
 
 #### /worktree Flow
 
@@ -418,7 +417,6 @@ Manages git worktree lifecycle for Agent Kanban tasks. Wraps `git worktree add`,
 |---------|---------|-------------|
 | `agentKanban.worktreeRoot` | `../{repo}-worktrees` | Root directory for worktrees. `{repo}` is replaced with the repository name. |
 | `agentKanban.worktreeOpenBehavior` | `current` | Open worktree in `current` window or a `new` window. |
-| `agentKanban.enforceWorktrees` | `false` | Require a git worktree before using `/refresh`. |
 
 ### Branch Naming
 
