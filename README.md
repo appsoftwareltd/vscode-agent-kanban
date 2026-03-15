@@ -230,8 +230,8 @@ npx @vscode/vsce publish
 
 # 3. Tag and push
 git add .
-git commit -m "Release v2.0.0"
-git tag v2.0.0
+git commit -m "Release v2.1.0"
+git tag v2.1.0
 git push origin main --tags
 ```
 
