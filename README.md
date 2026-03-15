@@ -23,7 +23,7 @@ Agent Kanban references its own instruction set, so it doesn't interfere with yo
 ## Features
 
 - **Kanban Board** — Visual board with customisable lanes (default: Todo, Doing, Done). Drag-and-drop task cards between lanes.
-- **Markdown Task Files** — Each task is a `.md` file with YAML frontmatter. Conversation history uses `### user`/`### agent` markers — directly readable, editable, and version-control friendly.
+- **Markdown Task Files** — Each task is a `.md` file with YAML frontmatter. Conversation history uses `### user` / `### agent` / `[comment: user comment]` markers — directly readable, editable, and version-control friendly.
 - **Chat Participant** — `@kanban` in Copilot Chat routes commands to task files. Copilot's native agent mode handles all work (tool calls, diffs, terminal). No custom LLM loop.
 - **Context Refresh** — Use `@kanban /task` to select a task, then `@kanban /refresh` to re-inject context if the agent drifts in a long conversation. Context injection is automatic and keeps the agent on track.
 - **Version Control Friendly** — One `.md` file per task, board config in YAML. Standard text files that diff/merge naturally meaning that this folder can be version controlled and shared among the team using your standard Git workflow.
@@ -177,6 +177,26 @@ Here's my analysis of OAuth2 approaches...
 The lane a task belongs to is stored in its YAML frontmatter `lane` field. Archived tasks are moved to `tasks/archive/` and retain their original lane in frontmatter.
 
 Optional frontmatter fields: `description`, `priority` (critical/high/medium/low/none), `assignee`, `labels`, `dueDate`, `sortOrder`, `worktree` (auto-managed by the extension).
+
+### Conversation Markers
+
+Within the `## Conversation` section, three markers structure the dialogue:
+
+| Marker | Meaning |
+|--------|---------|
+| `### user` | A user turn — instructions, context, or questions directed at the agent |
+| `### agent` | An agent turn — the agent's response or output |
+| `[comment: your text]` | An inline annotation that is visible in the file but ignored by the agent |
+
+**Slash command shortcuts** — When editing a task file, type `/` to trigger completions:
+
+| Slash command | Inserts |
+|---------------|---------|
+| `/User Turn` | `### user` conversation marker |
+| `/Agent Turn` | `### agent` conversation marker |
+| `/Comment` | `[comment: ]` annotation with cursor inside |
+
+These completions are suppressed inside YAML frontmatter and fenced code blocks.
 
 ## Storage
 
