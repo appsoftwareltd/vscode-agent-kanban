@@ -36,6 +36,8 @@ Agent Kanban references its own instruction set, so it doesn't interfere with yo
 4. The task file accumulates the full conversation - edit it directly to steer the agent or add context
 5. Drag cards between lanes as work progresses
 
+Verb shorthands: `p` = plan, `t` = todo, `i` = implement. Combine freely — `ti` or `t i` means `todo implement`, `pti` means `plan todo implement`.
+
 ### Workflow option 1 - `/task` `/refresh` based flow
 
 - Use `@kanban /task My Task` to select a task — opens the task file and sets up context
@@ -221,7 +223,6 @@ All tasks live flat in `tasks/`. The lane is stored in frontmatter, not in the d
 |---------|-------|-------------|
 | `agentKanban.enableLogging` | Window | Enable diagnostic logging to `.agentkanban/logs/`. Requires reload. |
 | `agentKanban.customInstructionFile` | Resource | Path to a custom instruction file injected into the `/task` workflow. Relative paths resolve from workspace root. |
-| `agentKanban.enforceWorktrees` | Resource | Require a git worktree before using `/refresh`. Prompts to create a worktree if one doesn't exist. |
 
 ## Development
 
@@ -250,8 +251,8 @@ npx @vscode/vsce publish
 
 # 3. Tag and push
 git add .
-git commit -m "Release v2.1.0"
-git tag v2.1.0
+git commit -m "Release v2.1.1"
+git tag v2.1.1
 git push origin main --tags
 ```
 

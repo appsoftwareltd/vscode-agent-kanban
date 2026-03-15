@@ -1196,68 +1196,6 @@ describe('ChatParticipant', () => {
         });
     });
 
-    describe('enforceWorktrees', () => {
-        it('should block refresh when enforceWorktrees is true and task has no worktree', async () => {
-            const mockWs = {
-                isGitRepo: vi.fn().mockResolvedValue(true),
-            } as any;
-            const wsParticipant = new ChatParticipant(taskStore, boardConfigStore, extensionUri, undefined, undefined, mockWs);
-
-            const task: Task = {
-                id: 'task_ew', title: 'Enforce Task', lane: 'doing',
-                created: '2026-03-08T10:00:00.000Z', updated: '2026-03-08T10:00:00.000Z', description: '',
-            };
-            (taskStore as any).tasks.set(task.id, task);
-            wsParticipant.lastSelectedTaskId = task.id;
-
-            vi.spyOn(workspace, 'getConfiguration').mockReturnValue({
-                get: (key: string, defaultValue?: any) => {
-                    if (key === 'enforceWorktrees') { return true; }
-                    return defaultValue;
-                },
-                update: async () => { },
-            } as any);
-
-            const response = mockResponse();
-            await wsParticipant.handleRequest(mockRequest('refresh', ''), {} as any, response, mockToken);
-
-            expect(response.messages.some((m: string) => m.includes('Worktree required'))).toBe(true);
-        });
-
-        it('should allow refresh when task has a worktree even with enforceWorktrees', async () => {
-            const mockWs = {
-                isGitRepo: vi.fn().mockResolvedValue(true),
-            } as any;
-            const wsParticipant = new ChatParticipant(taskStore, boardConfigStore, extensionUri, undefined, undefined, mockWs);
-
-            const task: Task = {
-                id: 'task_ewok', title: 'Has WT', lane: 'doing',
-                created: '2026-03-08T10:00:00.000Z', updated: '2026-03-08T10:00:00.000Z', description: '',
-                worktree: { branch: 'agentkanban/test', path: '/wt/test', created: '' },
-            };
-            (taskStore as any).tasks.set(task.id, task);
-            wsParticipant.lastSelectedTaskId = task.id;
-
-            vi.spyOn(workspace, 'getConfiguration').mockReturnValue({
-                get: (key: string, defaultValue?: any) => {
-                    if (key === 'enforceWorktrees') { return true; }
-                    return defaultValue;
-                },
-                update: async () => { },
-            } as any);
-            vi.spyOn(workspace.fs, 'readFile').mockResolvedValue(new TextEncoder().encode('# Template'));
-            vi.spyOn(workspace.fs, 'writeFile').mockResolvedValue(undefined);
-            vi.spyOn(workspace, 'openTextDocument').mockResolvedValue({} as any);
-            vi.spyOn(window, 'showTextDocument').mockResolvedValue(undefined as any);
-
-            const response = mockResponse();
-            await wsParticipant.handleRequest(mockRequest('refresh', ''), {} as any, response, mockToken);
-
-            expect(response.messages.some((m: string) => m.includes('REFRESH'))).toBe(true);
-            expect(response.messages.every((m: string) => !m.includes('Worktree required'))).toBe(true);
-        });
-    });
-
     describe('resolveTaskFromPrompt — slug matching', () => {
         beforeEach(() => {
             const tasks: Task[] = [
@@ -1358,34 +1296,6 @@ describe('ChatParticipant', () => {
 
             expect(response.messages.some((m: string) => m.includes('/wt/path'))).toBe(true);
             expect(response.messages.some((m: string) => m.includes('agentkanban/wt'))).toBe(true);
-        });
-
-        it('should show enforce hint when worktrees enforced and no worktree', async () => {
-            const mockWs = { isGitRepo: vi.fn().mockResolvedValue(true) } as any;
-            const wsParticipant = new ChatParticipant(taskStore, boardConfigStore, extensionUri, () => true, undefined, mockWs);
-
-            const task: Task = {
-                id: 'task_notwt', title: 'No WT Task', lane: 'doing',
-                created: '2026-01-01T00:00:00.000Z', updated: '2026-01-01T00:00:00.000Z',
-                description: '',
-            };
-            (taskStore as any).tasks.set(task.id, task);
-
-            vi.spyOn(workspace, 'getConfiguration').mockReturnValue({
-                get: (key: string, defaultValue?: any) => {
-                    if (key === 'enforceWorktrees') { return true; }
-                    if (key === 'customInstructionFile') { return ''; }
-                    return defaultValue;
-                },
-                update: async () => { },
-            } as any);
-            vi.spyOn(workspace, 'openTextDocument').mockResolvedValue({} as any);
-            vi.spyOn(window, 'showTextDocument').mockResolvedValue(undefined as any);
-
-            const response = mockResponse();
-            await wsParticipant.handleRequest(mockRequest('task', 'No WT Task'), {} as any, response, mockToken);
-
-            expect(response.messages.some((m: string) => m.includes('Worktree enforcement is on'))).toBe(true);
         });
 
         it('should not show worktree info when task has no worktree', async () => {
