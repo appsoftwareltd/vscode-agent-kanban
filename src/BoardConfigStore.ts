@@ -1,26 +1,23 @@
 import * as vscode from 'vscode';
 import { parse, stringify } from 'yaml';
 import type { BoardConfig } from './types';
-import { DEFAULT_BOARD_CONFIG, slugifyLane, RESERVED_LANES } from './types';
+import { DEFAULT_BOARD_CONFIG } from './types';
 import type { LogService } from './LogService';
 import { NO_OP_LOGGER } from './LogService';
 
 const CONFIG_PATH = '.agentkanban/board.yaml';
 const GITIGNORE_PATH = '.agentkanban/.gitignore';
 const GITIGNORE_CONTENT = '# Agent Kanban — auto-generated\nlogs/\n';
-const TASKS_DIR = '.agentkanban/tasks';
 
 export class BoardConfigStore {
     private config: BoardConfig = { ...DEFAULT_BOARD_CONFIG, lanes: [...DEFAULT_BOARD_CONFIG.lanes] };
     private readonly configUri: vscode.Uri;
-    private readonly tasksUri: vscode.Uri;
     private readonly _onDidChange = new vscode.EventEmitter<void>();
     readonly onDidChange = this._onDidChange.event;
     private readonly logger: LogService;
 
     constructor(private readonly workspaceUri: vscode.Uri, logger?: LogService) {
         this.configUri = vscode.Uri.joinPath(workspaceUri, CONFIG_PATH);
-        this.tasksUri = vscode.Uri.joinPath(workspaceUri, TASKS_DIR);
         this.logger = logger ?? NO_OP_LOGGER;
     }
 
@@ -97,65 +94,7 @@ export class BoardConfigStore {
             await this.save();
         }
 
-        // Ensure lane directories exist
-        await this.ensureLaneDirectories();
-
         this._onDidChange.fire();
-    }
-
-    /** Create directories for all configured lanes. */
-    private async ensureLaneDirectories(): Promise<void> {
-        try {
-            await vscode.workspace.fs.createDirectory(this.tasksUri);
-        } catch { /* exists */ }
-        for (const lane of this.config.lanes) {
-            const dirUri = vscode.Uri.joinPath(this.tasksUri, lane);
-            try {
-                await vscode.workspace.fs.createDirectory(dirUri);
-            } catch { /* exists */ }
-        }
-    }
-
-    /**
-     * Reconcile board.yaml lanes with actual task directories.
-     * - Directories not in config → add to config
-     * - Config lanes without directories → create directories
-     * - Auto-slugify non-conforming directory names
-     */
-    async reconcileWithDirectories(taskDirs: string[]): Promise<void> {
-        let changed = false;
-
-        for (const dir of taskDirs) {
-            if (RESERVED_LANES.includes(dir)) {
-                continue;
-            }
-            const slug = slugifyLane(dir);
-            if (!slug) { continue; }
-
-            // Auto-rename non-conforming directory names
-            if (dir !== slug) {
-                const oldUri = vscode.Uri.joinPath(this.tasksUri, dir);
-                const newUri = vscode.Uri.joinPath(this.tasksUri, slug);
-                try {
-                    await vscode.workspace.fs.rename(oldUri, newUri, { overwrite: false });
-                    this.logger.info('boardConfig', `Renamed directory ${dir} → ${slug}`);
-                } catch (err: any) {
-                    this.logger.warn('boardConfig', `Failed to rename directory ${dir}: ${err.message}`);
-                    continue;
-                }
-            }
-
-            if (!this.config.lanes.includes(slug)) {
-                this.config.lanes.push(slug);
-                changed = true;
-                this.logger.info('boardConfig', `Added discovered lane: ${slug}`);
-            }
-        }
-
-        if (changed) {
-            await this.save();
-            this._onDidChange.fire();
-        }
     }
 
     get(): BoardConfig {

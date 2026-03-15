@@ -32,19 +32,25 @@ const AGENTS_MD_SECTION = [
 const WORKTREE_WORKSPACE_HINT = 'ℹ️ **Worktree workspace** — AGENTS.md permanently provides task context. You don\'t need these commands unless you use `/task` to switch tasks.\n\n';
 
 /** Build a richer AGENTS.md sentinel for worktree-linked workspaces. */
-export function buildWorktreeAgentsMdSection(taskTitle: string, taskRelPath: string): string {
-    return [
+export function buildWorktreeAgentsMdSection(taskTitle: string, taskRelPath: string, todoRelPath?: string): string {
+    const lines = [
         AGENTS_MD_BEGIN,
         '## Agent Kanban',
         '',
         `**Active Task:** ${taskTitle}`,
         `**Task File:** \`${taskRelPath}\``,
+    ];
+    if (todoRelPath) {
+        lines.push(`**Todo File:** \`${todoRelPath}\``);
+    }
+    lines.push(
         '',
         'Read the task file above before responding.',
         'Read `.agentkanban/INSTRUCTION.md` for task workflow rules.',
         'Read `.agentkanban/memory.md` for project context.',
         AGENTS_MD_END,
-    ].join('\n');
+    );
+    return lines.join('\n');
 }
 
 /**
@@ -153,7 +159,7 @@ export class ChatParticipant {
      * names the specific task file — this is used in worktree workspaces where
      * the AGENTS.md is protected by --skip-worktree.
      */
-    async syncAgentsMdSection(worktreeTask?: { title: string; taskRelPath: string }): Promise<vscode.Uri | undefined> {
+    async syncAgentsMdSection(worktreeTask?: { title: string; taskRelPath: string; todoRelPath?: string }): Promise<vscode.Uri | undefined> {
         const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
         if (!workspaceFolder) { return undefined; }
 
@@ -176,9 +182,8 @@ export class ChatParticipant {
                 return agentsUri;
             }
 
-            // Choose the appropriate sentinel section
             const section = worktreeTask
-                ? buildWorktreeAgentsMdSection(worktreeTask.title, worktreeTask.taskRelPath)
+                ? buildWorktreeAgentsMdSection(worktreeTask.title, worktreeTask.taskRelPath, worktreeTask.todoRelPath)
                 : AGENTS_MD_SECTION;
 
             const beginIdx = existing.indexOf(AGENTS_MD_BEGIN);
@@ -214,7 +219,9 @@ export class ChatParticipant {
         if (linkedTask) {
             const taskUri = this.taskStore.getTaskUri(linkedTask.id);
             const taskRelPath = vscode.workspace.asRelativePath(taskUri);
-            await this.syncAgentsMdSection({ title: linkedTask.title, taskRelPath });
+            const todoUri = this.taskStore.getTodoUri(linkedTask.id);
+            const todoRelPath = vscode.workspace.asRelativePath(todoUri);
+            await this.syncAgentsMdSection({ title: linkedTask.title, taskRelPath, todoRelPath });
             this.logger.info('chatParticipant', `Synced worktree AGENTS.md for task: ${linkedTask.title}`);
         }
     }
@@ -473,7 +480,9 @@ export class ChatParticipant {
             if (task.worktree) {
                 const taskUri = this.taskStore.getTaskUri(task.id);
                 const taskRelPath = vscode.workspace.asRelativePath(taskUri);
-                await this.syncAgentsMdSection({ title: task.title, taskRelPath });
+                const todoUri = this.taskStore.getTodoUri(task.id);
+                const todoRelPath = vscode.workspace.asRelativePath(todoUri);
+                await this.syncAgentsMdSection({ title: task.title, taskRelPath, todoRelPath });
             } else {
                 await this.syncAgentsMdSection();
             }

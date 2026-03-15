@@ -6,9 +6,11 @@ By [appsoftware.com](https://www.appsoftware.com)
 
 **VS Code Agent Kanban is available on the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=AppSoftwareLtd.vscode-agent-kanban)**
 
-A VS Code extension providing an integrated Kanban board for managing coding agent tasks designed to work with **GitHub Copilot Chat**. Tasks are managed as structured markdown files that are fully version-controllable.
+A VS Code extension providing an integrated Kanban board and the formalisation of a markdown based `plan` / `todo` / `implement` workflow all within VS Code. VS Code Agent Kanban is designed to work with **GitHub Copilot Chat** and provides tools for keeping workflow instructions fresh in context, and per-task **Git Worktree** integration support.
 
-**Create tasks on the Kanban board and then plan and converse with your agent in the task markdown file, giving you a permanent task history that's editable, resistant to context bloat and persists after clearing chat context.**
+> **The key concept: A `plan` / `todo` / `implement` workflow with markdown files that form a permanent record of design choices and actions makes for a robust 'human-in-the-loop' workflow that produces high quality agent assisted code implementations, even on long complex problems.**
+
+Task files are designed to be version control friendly, so they can be shared with your team. 
 
 Agent Kanban references its own instruction set, so it doesn't interfere with your existing agent files (e.g. AGENTS.md, skills etc).
 
@@ -21,37 +23,45 @@ Agent Kanban references its own instruction set, so it doesn't interfere with yo
 ## Features
 
 - **Kanban Board** — Visual board with customisable lanes (default: Todo, Doing, Done). Drag-and-drop task cards between lanes.
-- **Markdown Task Files** — Each task is a `.md` file with YAML frontmatter. Conversation history uses `[user]`/`[agent]` markers — directly readable, editable, and version-control friendly.
+- **Markdown Task Files** — Each task is a `.md` file with YAML frontmatter. Conversation history uses `### user`/`### agent` markers — directly readable, editable, and version-control friendly.
 - **Chat Participant** — `@kanban` in Copilot Chat routes commands to task files. Copilot's native agent mode handles all work (tool calls, diffs, terminal). No custom LLM loop.
 - **Context Refresh** — Use `@kanban /task` to select a task, then `@kanban /refresh` to re-inject context if the agent drifts in a long conversation. Context injection is automatic and keeps the agent on track.
 - **Version Control Friendly** — One `.md` file per task, board config in YAML. Standard text files that diff/merge naturally meaning that this folder can be version controlled and shared among the team using your standard Git workflow.
-
 
 ## Getting Started
 
 1. Install the extension and click the Kanban icon in the Activity Bar
 2. Click **+ New Task** (or `@kanban /new My Task` in chat)
-3. Use `@kanban /task My Task` to select a task — opens the task file and sets up context
-4. In agent mode, type **plan**, **todo**, **implement** (or a combination) to begin — the agent reads the task file and follows the iterative workflow
-5. Use `@kanban /refresh` any time the agent loses track, to re-inject context
-6. The task file accumulates the full conversation — edit it directly to steer the agent or add context
-7. Drag cards between lanes as work progresses
-8. *(Optional)* For larger tasks, use `@kanban /worktree` to give the agent its own branch and working directory — it can make sweeping changes without touching your main workspace (see [Git Worktrees](#git-worktrees))
+3. Choose a workflow (below)
+4. The task file accumulates the full conversation - edit it directly to steer the agent or add context
+5. Drag cards between lanes as work progresses
+
+### Workflow option 1 - `/task` `/refresh` based flow
+
+- Use `@kanban /task My Task` to select a task — opens the task file and sets up context
+- In agent mode, type **plan**, **todo**, **implement** (or a combination) to begin — the agent reads the task file and follows the iterative workflow
+- Use `@kanban /refresh` any time the agent loses track, to re-inject context
+
+### Workflow option 2 - Git Worktree based flow
+
+- For larger tasks, use `@kanban /worktree` (or create the worktree directly from the taskboard) to give the agent its own branch and working directory - it can make sweeping changes without touching your main workspace (see [Git Worktrees](#git-worktrees))
+
+**In Git Worktree based flow - there is no need to use `/task` `/refresh` to keep the instructions fresh in context, as `AGENTS.md` is enhanced to reference the task file and extension instructions (we don't modify your `AGENTS.md`, we use `--skip-worktree` in the Worktree branch so that modifications are not committed back to your repository). `AGENTS.md` is sent with every agent turn, which makes it the best place to set task specific instruction.
 
 ## Chat Commands
 
 | Command | Usage | Description |
 |---------|-------|-------------|
 | `/new` | `@kanban /new <title>` | Create a new task |
-| `/task` | `@kanban /task <task name>` | Select a task — opens the file, sets up context |
+| `/task` | `@kanban /task <task name>` | Select a task — opens the file, sets up context *|
 | `/refresh` | `@kanban /refresh [context]` | Re-inject agent context for the selected task |
 | `/worktree` | `@kanban /worktree` | Create a git worktree for the selected task |
-| | `@kanban /worktree open` | Open the task worktree in VS Code |
-| | `@kanban /worktree remove` | Remove the task worktree |
+| `@kanban /worktree open` | Open the task worktree in VS Code |
+| `@kanban /worktree remove` | Remove the task worktree |
 
-Task matching is fuzzy and case-insensitive. Tasks in the Done lane are excluded.
+\* Task name matching is fuzzy and case-insensitive. Tasks in the Done lane are excluded.
 
-`/refresh` re-injects the full agent context (INSTRUCTION.md, task file, AGENTS.md section) without implying a specific workflow phase. Use it any time the agent drifts in a long conversation.
+`/refresh` re-injects the full agent context (INSTRUCTION.md, task file, AGENTS.md section) without implying a specific workflow phase. Use it any time the agent drifts in a long conversation when using non Git Worktree base workflow.
 
 ## Agent Instructions
 
@@ -65,13 +75,11 @@ Agent Kanban uses a layered approach to keep the agent on track, even in long co
 
 3. **`/refresh` command** — On-demand context refresh. Re-syncs INSTRUCTION.md, updates the AGENTS.md section, and re-references the task file. Use this when the agent drifts in a long conversation.
 
-4. **Editor tab** — `/task` and `/refresh` commands open the task file in the editor. While the tab is open, the agent can see it as context.
-
 `.agentkanban/INSTRUCTION.md` is managed automatically — synced from the bundled template on every activation and command. **Do not edit it directly**; changes are overwritten on update. To customise agent behaviour, use your own agent configuration files (`AGENTS.md` outside the sentinels, `CLAUDE.md`, skills, etc.).
 
 > **Note:** If your workspace already has an `AGENTS.md`, Agent Kanban only modifies content between its sentinel comments. Your own instructions are preserved.
 
-### Why a layered approach?
+### Agent Kanban Instruction Approach
 
 In long Copilot chat conversations, earlier messages gradually scroll out of the model's context window. A single one-shot instruction injection (e.g. "read INSTRUCTION.md") works initially but the agent eventually forgets the workflow rules (context decay). We explored several mechanisms in isolation — `response.reference()`, `.instructions.md` with `applyTo` globs, MCP tool calls — and found that none completely solved the problem alone. Of these, `AGENTS.md` is the strongest because VS Code re-injects it at the system-prompt level on every agent turn — it never decays. The other layers (per-thread references, `/refresh` command, open editor tabs) provide complementary safety nets, giving the agent multiple independent paths back to the workflow rules and the active task file.
 
@@ -139,6 +147,7 @@ When you run `@kanban /worktree` (or click the branch icon on a Kanban card), Ag
 ```markdown
 ---
 title: Implement OAuth2
+lane: doing
 created: 2026-03-08T10:00:00.000Z
 updated: 2026-03-08T14:30:00.000Z
 description: OAuth2 integration for the API
@@ -149,19 +158,23 @@ labels:
   - auth
 dueDate: 2026-03-15
 worktree:
-  branch: agentkanban/task_20260308_143045123_abc123_implement_oauth2
-  path: /home/alice/projects/myrepo-worktrees/task_20260308_143045123_abc123_implement_oauth2
+  branch: agentkanban/task_20260308_abc123_implement_oauth2
+  path: /home/alice/projects/myrepo-worktrees/task_20260308_abc123_implement_oauth2
   created: 2026-03-08T14:35:00.000Z
 ---
 
 ## Conversation
 
-[user] Let's plan the OAuth2 implementation...
+### user
 
-[agent] Here's my analysis of OAuth2 approaches...
+Let's plan the OAuth2 implementation...
+
+### agent
+
+Here's my analysis of OAuth2 approaches...
 ```
 
-The lane a task belongs to is determined by its directory (e.g. `tasks/doing/`), not by a frontmatter field.
+The lane a task belongs to is stored in its YAML frontmatter `lane` field. Archived tasks are moved to `tasks/archive/` and retain their original lane in frontmatter.
 
 Optional frontmatter fields: `description`, `priority` (critical/high/medium/low/none), `assignee`, `labels`, `dueDate`, `sortOrder`, `worktree` (auto-managed by the extension).
 
@@ -174,18 +187,13 @@ Optional frontmatter fields: `description`, `priority` (critical/high/medium/low
   memory.md           # Global memory (reset via Agent Kanban: Reset Memory command)
   INSTRUCTION.md      # Agent workflow instructions (managed by extension)
   tasks/
-    todo/             # Lane directory — one per lane
-      task_<timestamp>_<id>_<title>.md
-      todo_<timestamp>_<id>_<title>.md
-    doing/
-      task_<timestamp>_<id>_<title>.md
-    done/
-      task_<timestamp>_<id>_<title>.md
+    task_<date>_<id>_<title>.md    # Task files (lane stored in frontmatter)
+    todo_<date>_<id>_<title>.md    # Corresponding TODO files
     archive/          # Hidden from the board
-      task_<timestamp>_<id>_<title>.md
+      task_<date>_<id>_<title>.md
 ```
 
-Tasks are stored in subdirectories matching their lane slug. Moving a task between lanes moves the file to the corresponding directory. Empty lane directories are preserved and shown as empty lanes on the board. The `archive/` directory is reserved for archived tasks and never appears as a lane.
+All tasks live flat in `tasks/`. The lane is stored in frontmatter, not in the directory structure. Only `tasks/archive/` is used as a subdirectory. When a lane is removed from the board, its tasks are archived (not deleted).
 
 ## Configuration
 

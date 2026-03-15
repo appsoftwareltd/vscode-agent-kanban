@@ -185,6 +185,7 @@ export class KanbanEditorPanel {
 
     private async _sendState(): Promise<void> {
         const tasks = this._taskStore.getAll()
+            .filter(t => !this._taskStore.isArchived(t))
             .sort((a, b) => {
                 const sa = a.sortOrder ?? Date.parse(a.created);
                 const sb = b.sortOrder ?? Date.parse(b.created);
@@ -222,6 +223,19 @@ export class KanbanEditorPanel {
                     await vscode.window.showTextDocument(doc, {
                         viewColumn: vscode.ViewColumn.Active,
                     });
+                }
+                break;
+            }
+
+            case 'openTodo': {
+                const uri = this._taskStore.getTodoUri(message.taskId);
+                try {
+                    const doc = await vscode.workspace.openTextDocument(uri);
+                    await vscode.window.showTextDocument(doc, {
+                        viewColumn: vscode.ViewColumn.Active,
+                    });
+                } catch {
+                    vscode.window.showInformationMessage('No TODO file exists for this task yet. It will be created automatically during task activity.');
                 }
                 break;
             }
@@ -289,9 +303,9 @@ export class KanbanEditorPanel {
                 // Build custom body with description as first [user] entry
                 let body: string;
                 if (task.description) {
-                    body = `\n## Conversation\n\n[user]\n\n${task.description}\n\n`;
+                    body = `\n## Conversation\n\n### user\n\n${task.description}\n\n`;
                 } else {
-                    body = '\n## Conversation\n\n[user]\n\n';
+                    body = '\n## Conversation\n\n### user\n\n';
                 }
                 await this._taskStore.saveWithBody(task, body);
                 break;
@@ -343,7 +357,7 @@ export class KanbanEditorPanel {
                     .filter((t) => t.lane === laneSlug);
                 if (laneTasks.length > 0) {
                     const confirm = await vscode.window.showWarningMessage(
-                        `Removing this lane will delete ${laneTasks.length} task${laneTasks.length === 1 ? '' : 's'}. Continue?`,
+                        `Removing this lane will archive ${laneTasks.length} task${laneTasks.length === 1 ? '' : 's'}. Continue?`,
                         { modal: true },
                         'Yes',
                     );
@@ -351,7 +365,7 @@ export class KanbanEditorPanel {
                         break;
                     }
                     for (const task of laneTasks) {
-                        await this._taskStore.delete(task.id);
+                        await this._taskStore.archiveTask(task.id);
                     }
                 }
                 config.lanes = config.lanes.filter((l) => l !== laneSlug);
@@ -394,17 +408,10 @@ export class KanbanEditorPanel {
                 if (newName) {
                     const newSlug = slugifyLane(newName);
                     if (newSlug && newSlug !== oldSlug) {
-                        // Rename directory
-                        const workspaceUri = vscode.workspace.workspaceFolders?.[0]?.uri;
-                        if (workspaceUri) {
-                            const oldDir = vscode.Uri.joinPath(workspaceUri, '.agentkanban', 'tasks', oldSlug);
-                            const newDir = vscode.Uri.joinPath(workspaceUri, '.agentkanban', 'tasks', newSlug);
-                            try {
-                                await vscode.workspace.fs.rename(oldDir, newDir, { overwrite: false });
-                            } catch {
-                                // Directory might not exist yet — create it
-                                try { await vscode.workspace.fs.createDirectory(newDir); } catch { /* exists */ }
-                            }
+                        // Update lane in frontmatter for all tasks in this lane
+                        const tasksInLane = this._taskStore.getAll().filter(t => t.lane === oldSlug);
+                        for (const task of tasksInLane) {
+                            await this._taskStore.moveTaskToLane(task.id, newSlug);
                         }
                         // Update config
                         const idx = config.lanes.indexOf(oldSlug);
@@ -412,8 +419,6 @@ export class KanbanEditorPanel {
                             config.lanes[idx] = newSlug;
                         }
                         await this._boardConfigStore.update({ lanes: config.lanes });
-                        // Reload tasks to pick up new directory
-                        await this._taskStore.reload();
                     }
                 }
                 break;
@@ -476,7 +481,7 @@ export class KanbanEditorPanel {
                 const task = this._taskStore.get(message.taskId);
                 if (task) {
                     const hadWorktree = task.worktree;
-                    await this._taskStore.moveTaskToLane(message.taskId, 'archive');
+                    await this._taskStore.archiveTask(message.taskId);
                     if (hadWorktree) {
                         this._promptWorktreeRemoval(task);
                     }

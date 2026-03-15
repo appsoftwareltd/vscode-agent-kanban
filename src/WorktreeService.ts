@@ -272,7 +272,7 @@ export class WorktreeService {
                 // File doesn't exist in worktree yet
             }
 
-            const section = buildWorktreeAgentsMdSection(taskTitle, taskRelPath);
+            const section = buildWorktreeAgentsMdSection(taskTitle, taskRelPath, taskRelPath.replace(/\btask_/, 'todo_'));
             const beginIdx = existing.indexOf(AGENTS_MD_BEGIN);
             const endIdx = existing.indexOf(AGENTS_MD_END);
 

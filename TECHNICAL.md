@@ -45,9 +45,9 @@ interface WorktreeInfo {
 
 ```typescript
 interface Task {
-    id: string;           // e.g. task_20260308_143045123_abc123_my_task
+    id: string;           // e.g. task_20260308_abc123_my_task
     title: string;
-    lane: string;         // Lane slug — determined by directory, not frontmatter
+    lane: string;         // Lane slug — stored in frontmatter
     created: string;      // ISO 8601 timestamp
     updated: string;      // ISO 8601 timestamp (auto-updated on save)
     description: string;
@@ -61,7 +61,7 @@ interface Task {
 }
 ```
 
-Conversation history is stored in the markdown body of the task file (not in the Task interface). Uses `[user]`/`[agent]` markers.
+Conversation history is stored in the markdown body of the task file (not in the Task interface). Uses `### user`/`### agent` markers.
 
 ### BoardConfig (`types.ts`)
 
@@ -73,7 +73,6 @@ interface BoardConfig {
 }
 
 const PROTECTED_LANES = ['todo', 'done'];
-const RESERVED_LANES = ['archive'];
 
 function slugifyLane(name: string): string     // lowercase, non-alphanumeric→hyphens
 function displayLane(slug: string): string     // hyphens→spaces, UPPERCASE  
@@ -84,47 +83,53 @@ function isReservedLane(slug: string): boolean
 ### Lane Naming Model
 
 - **Storage**: Lanes are slugs (lowercase, hyphen-separated). E.g. `todo`, `in-progress`, `code-review`.
-- **Directories**: Each lane maps to a subdirectory under `.agentkanban/tasks/`. E.g. `tasks/todo/`, `tasks/in-progress/`.
+- **Frontmatter**: Each task stores its lane in the `lane` YAML frontmatter field.
 - **Display**: `displayLane(slug)` converts to UPPERCASE with hyphens→spaces. E.g. `in-progress` → `IN PROGRESS`.
 - **Input**: User input is slugified via `slugifyLane()`. E.g. `Code Review!` → `code-review`.
-- **Archive**: The `archive/` directory is reserved. Tasks in it are hidden from the board. It replaces the old `archived` boolean flag.
+- **Archive**: The `tasks/archive/` directory is reserved. Tasks in it are hidden from the board. Archived tasks retain their original lane in frontmatter.
 
 ## Persistence Layer
 
 ### TaskStore (`TaskStore.ts`)
 
-- Reads/writes `.md` files with YAML frontmatter under `.agentkanban/tasks/<lane-slug>/`
-- Tasks live in subdirectories matching their lane slug (e.g. `tasks/todo/`, `tasks/doing/`)
-- Task filenames: `task_YYYYMMDD_HHmmssfff_XXXXXX_slug.md` (ID derived from filename minus `.md`)
-- `init()` calls `migrateFlat()` (moves legacy flat task files into lane subdirectories), then `reload()`
-- `reload()` enumerates subdirectories (excluding `archive`), parses tasks, sets `task.lane` from directory name
-- `save()` writes to `tasks/<task.lane>/`, preserves existing markdown body
-- `moveTaskToLane(id, newLane)` — moves task file (and todo file) between lane directories via `vscode.workspace.fs.rename()`
-- `getDirectories()` — lists task subdirectory names for directory reconciliation
-- `createTask()` generates IDs via `generateId()` using timestamp + random + slugified title
-- `getTaskUri(id)` / `getTodoUri(taskId)` — construct URIs using cached lane directory
+- Reads/writes `.md` files with YAML frontmatter under `.agentkanban/tasks/` (flat) and `.agentkanban/tasks/archive/`
+- All non-archived tasks live directly in `tasks/`; lane is stored in frontmatter
+- Task filenames: `task_YYYYMMDD_XXXXXX_slug.md` (ID derived from filename minus `.md`)
+- `init()` calls `migrateFromDirectories()` (moves legacy lane-directory task files into flat `tasks/`, adds lane to frontmatter, renames from old HHmmssfff format), then `reload()`
+- `reload()` reads flat `tasks/` and `tasks/archive/`, parses tasks, reads `task.lane` from frontmatter
+- `save()` writes to `tasks/` (or `tasks/archive/` for archived tasks), preserves existing markdown body
+- `moveTaskToLane(id, newLane)` — updates lane in frontmatter only; no file move
+- `archiveTask(id)` — moves task file (and todo file) from `tasks/` to `tasks/archive/`; retains original lane in frontmatter
+- `createTask()` generates IDs via `generateId()` using date + random + slugified title
+- `getTaskUri(id)` / `getTodoUri(taskId)` — construct URIs using `_archivedIds` set to determine location
 - `findByTitle(query, excludeLane?)` — case-insensitive title search, optionally filtering by lane
+- `isArchived(task)` — checks if a task is in the archive directory (via `_archivedIds` set)
 - `delete()` removes both the task file and its associated `todo_*.md` file
-- Static methods: `serialise()`, `deserialise()`, `splitFrontmatter()`, `slugify()`, `generateId()`
-- `serialise()` does NOT write `lane` to frontmatter — lane is determined by directory
-- `deserialise()` does NOT read `lane` from frontmatter — sets `lane: ''` for caller to populate from directory
+- Static methods: `serialise()`, `deserialise()`, `splitFrontmatter()`, `slugify()`, `generateId()`, `extractSlugFromId()`, `migrateFileName()`
+- `serialise()` writes `lane` to frontmatter
+- `deserialise()` reads `lane` from frontmatter
 - Uses the `yaml` npm package (v2.x) for frontmatter parsing/stringifying with `lineWidth: 0`
 - In-memory cache with `Map<string, Task>`, `onDidChange` event for UI refresh
 
-#### Migration from Flat Layout
+#### Migration from Directory Layout
 
-`migrateFlat()` runs on `init()` and handles the transition from the old flat `tasks/` layout:
+`migrateFromDirectories()` runs on `init()` and handles the transition from the old lane-subdirectory layout:
 
-1. Scans for `task_*.md` files directly in `tasks/` (not in subdirectories)
-2. Reads legacy `lane` field from frontmatter to determine the target subdirectory
-3. If `archived: true`, moves to `tasks/archive/`
-4. Moves each file to the appropriate lane subdirectory
+1. Scans for subdirectories under `tasks/` (excluding `archive/`)
+2. For each task file in a lane subdirectory:
+   - Reads the file, adds `lane: <directory-name>` to frontmatter
+   - Renames from old format (`task_YYYYMMDD_HHmmssfff_XXXXXX_slug.md`) to new format (`task_YYYYMMDD_XXXXXX_slug.md`)
+   - Moves the file to flat `tasks/`
+   - Moves corresponding `todo_` files similarly
+3. Removes empty lane subdirectories after migration
+4. Also renames any flat files that still use the old naming format
 
 ### Task File Format
 
 ```markdown
 ---
 title: Implement OAuth2
+lane: doing
 created: 2026-03-08T10:00:00.000Z
 updated: 2026-03-08T14:30:00.000Z
 description: OAuth2 integration for the API
@@ -132,22 +137,26 @@ description: OAuth2 integration for the API
 
 ## Conversation
 
-[user] Let's plan the OAuth2 implementation...
+### user
 
-[agent] Here's my analysis...
+Let's plan the OAuth2 implementation...
+
+### agent
+
+Here's my analysis...
 ```
 
-Frontmatter fields: `title` (required), `created`, `updated`, `description` (omitted if empty). Optional metadata: `priority`, `assignee`, `labels`, `dueDate`, `sortOrder`, `worktree` (auto-managed by the extension — `branch`, `path`, `created`), `slug`.
+Frontmatter fields: `title` (required), `lane`, `created`, `updated`, `description` (omitted if empty). Optional metadata: `priority`, `assignee`, `labels`, `dueDate`, `sortOrder`, `worktree` (auto-managed by the extension — `branch`, `path`, `created`), `slug`.
 
-**Note**: `lane` is NOT stored in frontmatter — the lane is determined by which subdirectory the file lives in.
+**Note**: The `lane` field determines which board lane the task appears in. Archived tasks live in `tasks/archive/` and retain their original lane.
 
 ### Todo File Format
 
-Created on demand by `/todo` command. Filename mirrors task: `todo_YYYYMMDD_HHmmssfff_XXXXXX_slug.md`.
+Created on demand by `/todo` command. Filename mirrors task: `todo_YYYYMMDD_XXXXXX_slug.md`.
 
 ```markdown
 ---
-task: task_20260308_143045123_abc123_oauth2
+task: task_20260308_abc123_oauth2
 ---
 
 ## TODO
@@ -162,11 +171,6 @@ task: task_20260308_143045123_abc123_oauth2
 - Creates default config (3 lanes: `todo`, `doing`, `done`) if file doesn't exist
 - `init()` creates the `.agentkanban/` directory, ensures `.gitignore` exists, then loads or creates `board.yaml`
 - On `init()`, auto-migrates old `{id, name}` object format to flat slug list
-- `ensureLaneDirectories()` — creates subdirectories under `tasks/` for all configured lanes
-- `reconcileWithDirectories(taskDirs)` — syncs board.yaml with actual task directories:
-  - Unknown directories → added as new lanes in config
-  - Non-conforming directory names → auto-renamed to slugified form
-  - Reserved directories (e.g. `archive`) are skipped
 - `reconcileMetadata(tasks)` — scans task assignees/labels and adds any missing values to board.yaml
 - `ensureGitignore()` — creates `.agentkanban/.gitignore` (ignoring `logs/`) if it doesn't already exist. Idempotent; never overwrites a user-edited file.
 - `update()` accepts partial config for incremental changes
@@ -182,15 +186,17 @@ task: task_20260308_143045123_abc123_oauth2
 - Card click opens the task's `.md` file directly via `vscode.workspace.openTextDocument()`
 - **Done lane protection**: Remove button hidden for the Done lane; `removeLane` handler blocks deletion with a warning
 - **Protected lanes**: Lanes named "todo" or "done" cannot be removed or renamed. Uses `isProtectedLane()` from `types.ts`.
-- **Lane removal with task cleanup**: Removing a non-protected lane deletes all tasks in that lane. If tasks exist, a confirmation dialog is shown first.
-- **Archiving**: Archive moves a task to the `archive/` directory via `moveTaskToLane()`. Archived tasks are hidden from the board. A confirmation dialog is shown before archiving.
+- **Lane removal with task archiving**: Removing a non-protected lane archives all tasks in that lane. If tasks exist, a confirmation dialog is shown first.
+- **Archiving**: Archive moves a task to the `archive/` directory via `archiveTask()`. Archived tasks retain their original lane in frontmatter and are hidden from the board. A confirmation dialog is shown before archiving.
 - **Lane drag-and-drop reordering**: Lane headers are draggable. Dropping a lane on another lane reorders the `config.lanes` array via a `moveLane` message. Uses a separate data transfer type (`application/x-lane-id`) to distinguish from card drags.
 - Communication via `postMessage`/`onDidReceiveMessage`:
   - `newTask` — prompts for title, creates markdown file
   - `openTask` — opens task `.md` file in editor
+  - `openTodo` — opens the task's todo `.md` file in editor (shows info message if file doesn't exist)
   - `moveTask` — updates task lane in frontmatter
   - `addLane` / `removeLane` / `renameLane` / `moveLane` — updates board config
   - `deleteTask` — removes task and todo files
+- `_sendState()` filters out archived tasks before sending to the webview — the board only shows tasks in the flat `tasks/` directory
 - CSP: nonce-based script/style, `default-src 'none'`
 
 ## Chat Participant
@@ -281,7 +287,7 @@ Returns titles of all non-Done tasks. Used in the default (no command) response 
 
 ### Helper: `buildWorktreeAgentsMdSection()`
 
-Exported function that builds the enhanced AGENTS.md sentinel for worktree workspaces. Contains `**Active Task:**` and `**Task File:**` directives so the agent knows exactly which task file to read. Used by both `ChatParticipant.syncAgentsMdSection()` and `WorktreeService.writeWorktreeAgentsMd()`.
+Exported function that builds the enhanced AGENTS.md sentinel for worktree workspaces. Contains `**Active Task:**`, `**Task File:**`, and optionally `**Todo File:**` directives so the agent knows exactly which task file to read. Accepts an optional `todoRelPath` parameter. Used by both `ChatParticipant.syncAgentsMdSection()` and `WorktreeService.writeWorktreeAgentsMd()`.
 
 ### INSTRUCTION.md — Agent Context Injection
 
@@ -318,7 +324,8 @@ If a task file (`.agentkanban/tasks/**/*.md`) was referenced earlier in this con
 ## Agent Kanban
 
 **Active Task:** Implement OAuth2
-**Task File:** `.agentkanban/tasks/doing/task_xxx.md`
+**Task File:** `.agentkanban/tasks/task_xxx.md`
+**Todo File:** `.agentkanban/tasks/todo_xxx.md`
 
 Read the task file above before responding.
 Read `.agentkanban/INSTRUCTION.md` for task workflow rules.
@@ -359,9 +366,11 @@ Registered on the chat participant in `extension.ts` via `participant.followupPr
 6. Register `KanbanEditorPanel` serialiser and `openBoard`/`newTask` commands
 7. Register `ChatParticipant` as `@kanban` with followup provider
 8. Register commands: `openTask`, `resetMemory`, `initialise`
-9. Create file watchers: `.agentkanban/tasks/**/*.md` (debounced 200ms, with directory reconciliation), `.agentkanban/tasks/*` (directory-level) and `.agentkanban/board.yaml`
-10. If already initialised: load config/tasks, sync INSTRUCTION.md, sync AGENTS.md, sync worktree AGENTS.md (if in worktree workspace), clean stale worktree metadata, run housekeeping
-11. Start 10-minute housekeeping interval for ongoing reconciliation
+9. Create file watchers: `.agentkanban/tasks/**/*.md` (debounced 200ms) and `.agentkanban/board.yaml`
+10. Register `SlashCommandProvider` for `/` completions in task markdown files
+10. Register `SlashCommandProvider` for `/` completions in task markdown files
+11. If already initialised: load config/tasks, sync INSTRUCTION.md, sync AGENTS.md, sync worktree AGENTS.md (if in worktree workspace), clean stale worktree metadata, run housekeeping
+12. Start 10-minute housekeeping interval for ongoing reconciliation
 
 ### Commands
 
@@ -393,7 +402,7 @@ Manages git worktree lifecycle for Agent Kanban tasks. Wraps `git worktree add`,
 | `exists(worktreePath)` | Checks if a worktree directory still exists on disk |
 | `openInVSCode(worktreePath)` | Opens worktree folder respecting `worktreeOpenBehavior` setting |
 | `autoCommitTaskFiles(taskTitle, taskRelPath?)` | Stages and commits task files, returns commit hash |
-| `writeWorktreeAgentsMd(worktreePath, taskTitle, taskRelPath)` | Writes enhanced AGENTS.md sentinel into worktree directory |
+| `writeWorktreeAgentsMd(worktreePath, taskTitle, taskRelPath)` | Writes enhanced AGENTS.md sentinel into worktree directory (derives `todoRelPath` from task path) |
 | `getWorktreeRoot()` | Resolves configured root directory with `{repo}` placeholder |
 
 ### Worktree Creation Flow
@@ -414,6 +423,20 @@ Manages git worktree lifecycle for Agent Kanban tasks. Wraps `git worktree add`,
 ### Branch Naming
 
 All worktree branches use the `agentkanban/` prefix followed by the task slug (derived from the task ID, truncated and sanitised).
+
+## SlashCommandProvider (`SlashCommandProvider.ts`)
+
+Provides `/` slash command completions in task markdown files (`.agentkanban/tasks/**/*.md`). Implements `vscode.CompletionItemProvider` and is registered with `/` as the trigger character.
+
+### Commands
+
+| Command | Insert Text |
+|---------|-------------|
+| `/user` | `### user` block with cursor positioned inside |
+| `/agent` | `### agent` block with cursor positioned inside |
+| `/comment` | `[comment: ...]` inline marker with cursor inside |
+
+Completions are suppressed inside YAML frontmatter (between `---` delimiters) and fenced code blocks. Uses `vscode.SnippetString` for cursor placement. The replacement range covers the `/` trigger character.
 
 ## KanbanEditorPanel (`KanbanEditorPanel.ts`)
 

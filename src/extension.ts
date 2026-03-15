@@ -6,6 +6,7 @@ import { TaskStore } from './TaskStore';
 import { BoardConfigStore } from './BoardConfigStore';
 import { ChatParticipant } from './agents/ChatParticipant';
 import { WorktreeService } from './WorktreeService';
+import { SlashCommandProvider } from './SlashCommandProvider';
 import { LogService, NO_OP_LOGGER } from './LogService';
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
@@ -165,8 +166,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         if (reloadTimer) { clearTimeout(reloadTimer); }
         reloadTimer = setTimeout(async () => {
             reloadTimer = undefined;
-            const taskDirs = await taskStore.getDirectories();
-            boardConfigStore.reconcileWithDirectories(taskDirs);
             await taskStore.reload();
         }, 200);
     };
@@ -175,21 +174,25 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     mdWatcher.onDidDelete(debouncedReload);
     context.subscriptions.push(mdWatcher);
 
-    // Directory watcher — detects empty directory creation and directory renames
-    // under the tasks folder so new lanes appear on the board immediately.
-    const dirWatcher = vscode.workspace.createFileSystemWatcher(
-        new vscode.RelativePattern(workspaceFolder, '.agentkanban/tasks/*'),
-    );
-    dirWatcher.onDidCreate(debouncedReload);
-    dirWatcher.onDidDelete(debouncedReload);
-    context.subscriptions.push(dirWatcher);
-
     // File watcher for board config — reloads config when user edits board.yaml
     const yamlWatcher = vscode.workspace.createFileSystemWatcher(
         new vscode.RelativePattern(workspaceFolder, '.agentkanban/board.yaml'),
     );
     yamlWatcher.onDidChange(async () => { await boardConfigStore.init(); });
     context.subscriptions.push(yamlWatcher);
+
+    // Slash command completions for task markdown files
+    const taskDocSelector: vscode.DocumentSelector = {
+        language: 'markdown',
+        pattern: new vscode.RelativePattern(workspaceFolder, '.agentkanban/tasks/**/*.md'),
+    };
+    context.subscriptions.push(
+        vscode.languages.registerCompletionItemProvider(
+            taskDocSelector,
+            new SlashCommandProvider(),
+            '/',
+        ),
+    );
 
     if (isInitialised) {
         // Workspace already set up — read existing config and tasks, sync managed files

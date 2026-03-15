@@ -379,7 +379,8 @@ function buildModalHtml(): string {
                 </div>
                 <div class="modal-footer">
                     <div class="modal-footer-left" id="modal-footer-left">
-                        <button class="btn-primary" id="btn-open-task">Open in editor</button>
+                        <button class="btn-primary" id="btn-open-task">Task File</button>
+                        <button class="btn-secondary" id="btn-open-todo">TODO File</button>
                         <button class="btn-secondary" id="btn-send-to-chat" hidden>Send to Chat</button>
                     </div>
                     <div class="modal-actions">
@@ -450,6 +451,13 @@ function handleClick(e: MouseEvent): void {
     if ((t as HTMLElement).id === 'btn-open-task') {
         if (modalTaskId) {
             vscode.postMessage({ type: 'openTask', taskId: modalTaskId });
+            closeModal();
+        }
+        return;
+    }
+    if ((t as HTMLElement).id === 'btn-open-todo') {
+        if (modalTaskId) {
+            vscode.postMessage({ type: 'openTodo', taskId: modalTaskId });
             closeModal();
         }
         return;

@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { parse, stringify } from 'yaml';
 import type { Task, Priority, WorktreeInfo } from './types';
-import { slugifyLane, RESERVED_LANES } from './types';
+import { slugifyLane } from './types';
 import type { LogService } from './LogService';
 import { NO_OP_LOGGER } from './LogService';
 
@@ -23,13 +23,13 @@ export class TaskStore {
     }
 
     /**
-     * Read-only init: migrates flat task files (if any) and reloads tasks.
+     * Read-only init: migrates directory-based task files (if any) and reloads tasks.
      * Does NOT create the tasks directory.
      * Safe to call on uninitialised workspaces — silently loads nothing if
      * the directory does not exist.
      */
     async init(): Promise<void> {
-        await this.migrateFlat();
+        await this.migrateFromDirectories();
         await this.reload();
     }
 
@@ -47,10 +47,12 @@ export class TaskStore {
     }
 
     /**
-     * Migrate legacy flat task files from tasks/ root into lane subdirectories.
-     * Reads frontmatter `lane` to determine the target directory.
+     * Migrate legacy directory-based task files into flat tasks/ directory.
+     * Scans subdirectories under tasks/ (excluding archive/), moves files
+     * up into tasks/ adding the lane to frontmatter, and renames files
+     * from old format (with HHmmssfff timestamp) to new format.
      */
-    async migrateFlat(): Promise<void> {
+    async migrateFromDirectories(): Promise<void> {
         let entries: [string, vscode.FileType][];
         try {
             entries = await vscode.workspace.fs.readDirectory(this.tasksUri);
@@ -58,50 +60,130 @@ export class TaskStore {
             return;
         }
 
-        const flatTasks = entries.filter(
-            ([name, type]) => type === vscode.FileType.File && name.endsWith('.md') && name.startsWith('task_'),
+        // Find lane subdirectories (not archive, not files)
+        const laneDirs = entries.filter(
+            ([name, type]) => type === vscode.FileType.Directory && name !== 'archive',
         );
-        if (flatTasks.length === 0) {
+        if (laneDirs.length === 0) {
+            // Also rename any flat task files that have old naming format
+            await this.migrateFileNames(this.tasksUri);
+            const archiveUri = vscode.Uri.joinPath(this.tasksUri, 'archive');
+            await this.migrateFileNames(archiveUri);
             return;
         }
 
-        this.logger.info('taskStore', `Migrating ${flatTasks.length} flat task files to lane directories`);
-        for (const [name] of flatTasks) {
-            const srcUri = vscode.Uri.joinPath(this.tasksUri, name);
+        this.logger.info('taskStore', `Migrating ${laneDirs.length} lane directories to flat structure`);
+
+        for (const [dirName] of laneDirs) {
+            const dirUri = vscode.Uri.joinPath(this.tasksUri, dirName);
+            let dirEntries: [string, vscode.FileType][];
             try {
-                const content = await vscode.workspace.fs.readFile(srcUri);
-                const text = new TextDecoder().decode(content);
-                const task = TaskStore.deserialise(text);
-                // Read legacy lane from frontmatter, default to 'todo'
-                const legacyLane = this.extractLegacyLane(text) || 'todo';
-                const laneSlug = slugifyLane(legacyLane) || 'todo';
+                dirEntries = await vscode.workspace.fs.readDirectory(dirUri);
+            } catch {
+                continue;
+            }
 
-                // Check if task was archived
-                const isArchived = task && (task as any).archived === true;
-                const targetDir = isArchived ? 'archive' : laneSlug;
+            const lane = slugifyLane(dirName) || 'todo';
 
-                const dirUri = vscode.Uri.joinPath(this.tasksUri, targetDir);
-                try { await vscode.workspace.fs.createDirectory(dirUri); } catch { /* exists */ }
-
-                const destUri = vscode.Uri.joinPath(dirUri, name);
-                await vscode.workspace.fs.rename(srcUri, destUri, { overwrite: false });
-                this.logger.info('taskStore', `Migrated ${name} → ${targetDir}/`);
-
-                // Also migrate corresponding todo file
-                const todoName = name.replace(/^task_/, 'todo_');
-                const todoSrcUri = vscode.Uri.joinPath(this.tasksUri, todoName);
-                try {
-                    await vscode.workspace.fs.stat(todoSrcUri);
-                    const todoDestUri = vscode.Uri.joinPath(dirUri, todoName);
-                    await vscode.workspace.fs.rename(todoSrcUri, todoDestUri, { overwrite: false });
-                    this.logger.info('taskStore', `Migrated ${todoName} → ${targetDir}/`);
-                } catch {
-                    // no todo file — fine
+            for (const [fileName, fileType] of dirEntries) {
+                if (fileType !== vscode.FileType.File || !fileName.endsWith('.md')) {
+                    continue;
                 }
-            } catch (err: any) {
-                this.logger.warn('taskStore', `Failed to migrate ${name}: ${err.message}`);
+
+                const srcUri = vscode.Uri.joinPath(dirUri, fileName);
+
+                if (fileName.startsWith('task_')) {
+                    try {
+                        // Read and inject lane into frontmatter
+                        const content = await vscode.workspace.fs.readFile(srcUri);
+                        const text = new TextDecoder().decode(content);
+                        const task = TaskStore.deserialise(text);
+                        if (task) {
+                            task.lane = lane;
+                            const parsed = TaskStore.splitFrontmatter(text);
+                            const body = parsed.body;
+                            const newContent = TaskStore.serialise(task, body);
+
+                            // Determine new filename (drop HHmmssfff if present)
+                            const newFileName = TaskStore.migrateFileName(fileName);
+                            const destUri = vscode.Uri.joinPath(this.tasksUri, newFileName);
+                            await vscode.workspace.fs.writeFile(destUri, new TextEncoder().encode(newContent));
+                            await vscode.workspace.fs.delete(srcUri);
+                            this.logger.info('taskStore', `Migrated ${dirName}/${fileName} → ${newFileName}`);
+                        }
+                    } catch (err: any) {
+                        this.logger.warn('taskStore', `Failed to migrate ${dirName}/${fileName}: ${err.message}`);
+                    }
+                } else if (fileName.startsWith('todo_')) {
+                    try {
+                        const newFileName = TaskStore.migrateFileName(fileName);
+                        const destUri = vscode.Uri.joinPath(this.tasksUri, newFileName);
+                        await vscode.workspace.fs.rename(srcUri, destUri, { overwrite: false });
+                        this.logger.info('taskStore', `Migrated ${dirName}/${fileName} → ${newFileName}`);
+                    } catch (err: any) {
+                        this.logger.warn('taskStore', `Failed to migrate todo ${dirName}/${fileName}: ${err.message}`);
+                    }
+                }
+            }
+
+            // Remove empty directory
+            try {
+                const remaining = await vscode.workspace.fs.readDirectory(dirUri);
+                if (remaining.length === 0) {
+                    await vscode.workspace.fs.delete(dirUri);
+                    this.logger.info('taskStore', `Removed empty directory: ${dirName}`);
+                }
+            } catch {
+                // not critical
             }
         }
+
+        // Also rename any files in archive/ that have old format
+        const archiveUri = vscode.Uri.joinPath(this.tasksUri, 'archive');
+        await this.migrateFileNames(archiveUri);
+    }
+
+    /**
+     * Rename files within a directory from old format (with HHmmssfff) to new format.
+     * Only renames if the name actually changes.
+     */
+    private async migrateFileNames(dirUri: vscode.Uri): Promise<void> {
+        let entries: [string, vscode.FileType][];
+        try {
+            entries = await vscode.workspace.fs.readDirectory(dirUri);
+        } catch {
+            return;
+        }
+        for (const [name, type] of entries) {
+            if (type !== vscode.FileType.File || !name.endsWith('.md')) { continue; }
+            if (!name.startsWith('task_') && !name.startsWith('todo_')) { continue; }
+            const newName = TaskStore.migrateFileName(name);
+            if (newName !== name) {
+                try {
+                    const srcUri = vscode.Uri.joinPath(dirUri, name);
+                    const destUri = vscode.Uri.joinPath(dirUri, newName);
+                    await vscode.workspace.fs.rename(srcUri, destUri, { overwrite: false });
+                    this.logger.info('taskStore', `Renamed ${name} → ${newName}`);
+                } catch (err: any) {
+                    this.logger.warn('taskStore', `Failed to rename ${name}: ${err.message}`);
+                }
+            }
+        }
+    }
+
+    /**
+     * Convert a legacy filename with HHmmssfff to the new format without it.
+     * E.g. task_20260315_085316225_hwsri7_title.md → task_20260315_hwsri7_title.md
+     * Returns the name unchanged if it already uses the new format.
+     */
+    static migrateFileName(name: string): string {
+        // Match: (task_|todo_)YYYYMMDD_HHmmssfff_XXXXXX_slug.md
+        const match = name.match(/^(task_|todo_)(\d{8})_(\d{9})_([a-z0-9]{4,8})_(.+)$/);
+        if (match) {
+            const [, prefix, date, , uuid, rest] = match;
+            return `${prefix}${date}_${uuid}_${rest}`;
+        }
+        return name;
     }
 
     /** Extract legacy lane value from frontmatter text (before removal). */
@@ -118,18 +200,13 @@ export class TaskStore {
 
     async reload(): Promise<void> {
         this.tasks.clear();
+        this._archivedIds.clear();
         try {
-            const entries = await vscode.workspace.fs.readDirectory(this.tasksUri);
-            for (const [name, type] of entries) {
-                if (type === vscode.FileType.Directory) {
-                    // Skip archive directory — those tasks don't appear on the board
-                    if (RESERVED_LANES.includes(name)) {
-                        continue;
-                    }
-                    await this.loadTasksFromDirectory(name);
-                }
-                // Legacy flat files handled by migrateFlat() during init
-            }
+            // Load tasks from flat tasks/ directory
+            await this.loadTasksFromDirectory(this.tasksUri);
+            // Load archived tasks from tasks/archive/
+            const archiveUri = vscode.Uri.joinPath(this.tasksUri, 'archive');
+            await this.loadTasksFromDirectory(archiveUri, true);
             this.logger.info('taskStore', `Loaded ${this.tasks.size} tasks`);
         } catch {
             // directory may not exist yet
@@ -137,9 +214,8 @@ export class TaskStore {
         this._onDidChange.fire();
     }
 
-    /** Load all task files from a lane subdirectory. */
-    private async loadTasksFromDirectory(dirName: string): Promise<void> {
-        const dirUri = vscode.Uri.joinPath(this.tasksUri, dirName);
+    /** Load all task files from a directory. */
+    private async loadTasksFromDirectory(dirUri: vscode.Uri, isArchive = false): Promise<void> {
         let entries: [string, vscode.FileType][];
         try {
             entries = await vscode.workspace.fs.readDirectory(dirUri);
@@ -155,10 +231,20 @@ export class TaskStore {
                     const task = TaskStore.deserialise(text);
                     if (task) {
                         task.id = name.slice(0, -3);
-                        task.lane = dirName; // Directory is the source of truth
+                        // For archived tasks without a lane, default to 'archive'
+                        if (isArchive && !task.lane) {
+                            task.lane = 'archive';
+                        }
+                        // For non-archived tasks without a lane, default to 'todo'
+                        if (!isArchive && !task.lane) {
+                            task.lane = 'todo';
+                        }
                         // Backward compat: recover slug from ID if not in frontmatter
                         if (!task.slug) {
                             task.slug = TaskStore.extractSlugFromId(task.id);
+                        }
+                        if (isArchive) {
+                            this._archivedIds.add(task.id);
                         }
                         this.tasks.set(task.id, task);
                     }
@@ -169,22 +255,6 @@ export class TaskStore {
         }
     }
 
-    /** Return all lane directory names under tasks/ (excluding reserved). */
-    async getDirectories(): Promise<string[]> {
-        const dirs: string[] = [];
-        try {
-            const entries = await vscode.workspace.fs.readDirectory(this.tasksUri);
-            for (const [name, type] of entries) {
-                if (type === vscode.FileType.Directory && !RESERVED_LANES.includes(name)) {
-                    dirs.push(name);
-                }
-            }
-        } catch {
-            // directory may not exist
-        }
-        return dirs;
-    }
-
     getAll(): Task[] {
         return Array.from(this.tasks.values());
     }
@@ -193,39 +263,50 @@ export class TaskStore {
         return this.tasks.get(id);
     }
 
-    /** Returns the URI for a task's markdown file. Uses cache to determine lane directory. */
+    /** Returns the URI for a task's markdown file. Archived tasks live in tasks/archive/. */
     getTaskUri(id: string): vscode.Uri {
         const task = this.tasks.get(id);
-        if (task) {
-            return vscode.Uri.joinPath(this.tasksUri, task.lane, `${id}.md`);
+        if (task && this.isArchived(task)) {
+            return vscode.Uri.joinPath(this.tasksUri, 'archive', `${id}.md`);
         }
-        // Fallback: caller should ensure task is loaded
-        return vscode.Uri.joinPath(this.tasksUri, 'todo', `${id}.md`);
+        return vscode.Uri.joinPath(this.tasksUri, `${id}.md`);
     }
 
     /** Returns the URI for a task's todo file. */
     getTodoUri(taskId: string): vscode.Uri {
         const todoFilename = taskId.replace(/^task_/, 'todo_') + '.md';
         const task = this.tasks.get(taskId);
-        if (task) {
-            return vscode.Uri.joinPath(this.tasksUri, task.lane, todoFilename);
+        if (task && this.isArchived(task)) {
+            return vscode.Uri.joinPath(this.tasksUri, 'archive', todoFilename);
         }
-        return vscode.Uri.joinPath(this.tasksUri, 'todo', todoFilename);
+        return vscode.Uri.joinPath(this.tasksUri, todoFilename);
     }
+
+    /** Check if a task is stored in the archive directory. */
+    isArchived(task: Task): boolean {
+        // A task is archived if its file lives in the archive/ subdirectory.
+        // We detect this by checking if the file exists in archive/ at read time,
+        // but at runtime we track it via a simple signal: the task was loaded
+        // from the archive directory. We use a lightweight check:
+        // tasks loaded from archive have their lane preserved from frontmatter,
+        // and the archiveTask method moves files into archive/.
+        // For simplicity, check if the file exists in archive first.
+        // Actually: we can tell by checking the task's _archived flag or
+        // by relying on the fact that we only call moveToArchive explicitly.
+        // Let's use a direct approach: check membership.
+        return this._archivedIds.has(task.id);
+    }
+
+    /** Track which task IDs are in the archive directory. */
+    private _archivedIds = new Set<string>();
 
     async save(task: Task): Promise<void> {
         task.updated = new Date().toISOString();
         this.tasks.set(task.id, task);
-        const laneDir = vscode.Uri.joinPath(this.tasksUri, task.lane);
-        try {
-            await vscode.workspace.fs.createDirectory(laneDir);
-        } catch {
-            // directory may already exist
-        }
         const uri = this.getTaskUri(task.id);
 
         // Preserve existing markdown body if the file already exists
-        let body = '\n## Conversation\n\n[user]\n\n';
+        let body = '\n## Conversation\n\n### user\n\n';
         try {
             const existing = await vscode.workspace.fs.readFile(uri);
             const existingText = new TextDecoder().decode(existing);
@@ -247,12 +328,6 @@ export class TaskStore {
     async saveWithBody(task: Task, body: string): Promise<void> {
         task.updated = new Date().toISOString();
         this.tasks.set(task.id, task);
-        const laneDir = vscode.Uri.joinPath(this.tasksUri, task.lane);
-        try {
-            await vscode.workspace.fs.createDirectory(laneDir);
-        } catch {
-            // directory may already exist
-        }
         const uri = this.getTaskUri(task.id);
         const content = new TextEncoder().encode(TaskStore.serialise(task, body));
         await vscode.workspace.fs.writeFile(uri, content);
@@ -261,31 +336,32 @@ export class TaskStore {
     }
 
     /**
-     * Move a task (and its todo file) to a new lane directory.
-     * Reads the existing body, writes the complete serialised task at the
-     * new location (persisting any in-memory changes such as sortOrder or
-     * meta fields), then deletes the old file.
+     * Move a task to a new lane. Updates frontmatter only — no file move.
+     * Reads the existing body, writes the updated frontmatter at the same location.
      */
     async moveTaskToLane(id: string, newLane: string): Promise<void> {
         const task = this.tasks.get(id);
         if (!task) { return; }
 
         const oldLane = task.lane;
+        task.lane = newLane;
+        task.updated = new Date().toISOString();
+        this.tasks.set(id, task);
+
         if (oldLane === newLane) {
             await this.save(task);
             return;
         }
 
-        const oldTaskUri = vscode.Uri.joinPath(this.tasksUri, oldLane, `${id}.md`);
-        const newDir = vscode.Uri.joinPath(this.tasksUri, newLane);
-        const newTaskUri = vscode.Uri.joinPath(newDir, `${id}.md`);
+        // Read existing body from current file location
+        const wasArchived = this._archivedIds.has(id);
+        const oldUri = wasArchived
+            ? vscode.Uri.joinPath(this.tasksUri, 'archive', `${id}.md`)
+            : vscode.Uri.joinPath(this.tasksUri, `${id}.md`);
 
-        try { await vscode.workspace.fs.createDirectory(newDir); } catch { /* exists */ }
-
-        // Preserve existing markdown body from old file
-        let body = '\n## Conversation\n\n[user]\n\n';
+        let body = '\n## Conversation\n\n### user\n\n';
         try {
-            const existing = await vscode.workspace.fs.readFile(oldTaskUri);
+            const existing = await vscode.workspace.fs.readFile(oldUri);
             const existingText = new TextDecoder().decode(existing);
             const parsed = TaskStore.splitFrontmatter(existingText);
             if (parsed.body) {
@@ -295,43 +371,74 @@ export class TaskStore {
             // file may not exist at old location
         }
 
-        // Update in-memory state
-        task.lane = newLane;
-        task.updated = new Date().toISOString();
-        this.tasks.set(id, task);
-
-        // Write complete serialised task at new location
+        // Write updated file at same location (lane is in frontmatter now)
         const content = new TextEncoder().encode(TaskStore.serialise(task, body));
-        await vscode.workspace.fs.writeFile(newTaskUri, content);
-
-        // Delete old task file
-        try {
-            await vscode.workspace.fs.delete(oldTaskUri);
-        } catch {
-            // old file may not exist
-        }
-
-        // Move todo file if it exists
-        const todoFilename = id.replace(/^task_/, 'todo_') + '.md';
-        const oldTodoUri = vscode.Uri.joinPath(this.tasksUri, oldLane, todoFilename);
-        const newTodoUri = vscode.Uri.joinPath(newDir, todoFilename);
-        try {
-            await vscode.workspace.fs.stat(oldTodoUri);
-            await vscode.workspace.fs.rename(oldTodoUri, newTodoUri, { overwrite: false });
-        } catch {
-            // no todo file or already moved
-        }
+        await vscode.workspace.fs.writeFile(oldUri, content);
 
         this.logger.info('taskStore', `Moved task ${id} from ${oldLane} to ${newLane}`);
         this._onDidChange.fire();
     }
 
+    /**
+     * Archive a task — move file from tasks/ to tasks/archive/.
+     * Retains the original lane in frontmatter.
+     */
+    async archiveTask(id: string): Promise<void> {
+        const task = this.tasks.get(id);
+        if (!task) { return; }
+
+        if (this._archivedIds.has(id)) {
+            return; // already archived
+        }
+
+        const oldUri = vscode.Uri.joinPath(this.tasksUri, `${id}.md`);
+        const archiveDir = vscode.Uri.joinPath(this.tasksUri, 'archive');
+        try { await vscode.workspace.fs.createDirectory(archiveDir); } catch { /* exists */ }
+        const newUri = vscode.Uri.joinPath(archiveDir, `${id}.md`);
+
+        // Read body, update frontmatter, write to archive
+        let body = '\n## Conversation\n\n### user\n\n';
+        try {
+            const existing = await vscode.workspace.fs.readFile(oldUri);
+            const existingText = new TextDecoder().decode(existing);
+            const parsed = TaskStore.splitFrontmatter(existingText);
+            if (parsed.body) {
+                body = parsed.body;
+            }
+        } catch {
+            // source may not exist
+        }
+
+        task.updated = new Date().toISOString();
+        const content = new TextEncoder().encode(TaskStore.serialise(task, body));
+        await vscode.workspace.fs.writeFile(newUri, content);
+
+        // Delete old file
+        try { await vscode.workspace.fs.delete(oldUri); } catch { /* may not exist */ }
+
+        // Move todo file if it exists
+        const todoFilename = id.replace(/^task_/, 'todo_') + '.md';
+        const oldTodoUri = vscode.Uri.joinPath(this.tasksUri, todoFilename);
+        const newTodoUri = vscode.Uri.joinPath(archiveDir, todoFilename);
+        try {
+            await vscode.workspace.fs.stat(oldTodoUri);
+            await vscode.workspace.fs.rename(oldTodoUri, newTodoUri, { overwrite: false });
+        } catch { /* no todo file */ }
+
+        this._archivedIds.add(id);
+        this.logger.info('taskStore', `Archived task ${id}`);
+        this._onDidChange.fire();
+    }
+
     async delete(id: string): Promise<void> {
         const task = this.tasks.get(id);
+        const isArchived = this._archivedIds.has(id);
         this.tasks.delete(id);
-        const taskUri = task
-            ? vscode.Uri.joinPath(this.tasksUri, task.lane, `${id}.md`)
-            : this.getTaskUri(id);
+        this._archivedIds.delete(id);
+
+        const taskUri = isArchived
+            ? vscode.Uri.joinPath(this.tasksUri, 'archive', `${id}.md`)
+            : vscode.Uri.joinPath(this.tasksUri, `${id}.md`);
         try {
             await vscode.workspace.fs.delete(taskUri);
             this.logger.info('taskStore', `Deleted task ${id}`);
@@ -339,9 +446,9 @@ export class TaskStore {
             // file may not exist
         }
         const todoFilename = id.replace(/^task_/, 'todo_') + '.md';
-        const todoUri = task
-            ? vscode.Uri.joinPath(this.tasksUri, task.lane, todoFilename)
-            : this.getTodoUri(id);
+        const todoUri = isArchived
+            ? vscode.Uri.joinPath(this.tasksUri, 'archive', todoFilename)
+            : vscode.Uri.joinPath(this.tasksUri, todoFilename);
         try {
             await vscode.workspace.fs.delete(todoUri);
             this.logger.info('taskStore', `Deleted todo for ${id}`);
@@ -378,33 +485,35 @@ export class TaskStore {
     }
 
     /**
-     * Generate a task ID in the format: task_YYYYMMDD_HHmmssfff_XXXXXX_slugified_title
+     * Generate a task ID in the format: task_YYYYMMDD_XXXXXX_slugified_title
      */
     static generateId(date: Date, title: string): string {
         const y = date.getFullYear();
         const mo = String(date.getMonth() + 1).padStart(2, '0');
         const d = String(date.getDate()).padStart(2, '0');
-        const h = String(date.getHours()).padStart(2, '0');
-        const mi = String(date.getMinutes()).padStart(2, '0');
-        const s = String(date.getSeconds()).padStart(2, '0');
-        const ms = String(date.getMilliseconds()).padStart(3, '0');
-        const ts = `${y}${mo}${d}_${h}${mi}${s}${ms}`;
+        const ds = `${y}${mo}${d}`;
         const uuid = Math.random().toString(36).slice(2, 8);
         const slug = TaskStore.slugify(title);
-        return `task_${ts}_${uuid}_${slug}`;
+        return `task_${ds}_${uuid}_${slug}`;
     }
 
     /**
      * Extract the slug portion from a task ID.
-     * ID format: task_YYYYMMDD_HHmmssfff_XXXXXX_<slug>
+     * ID format: task_YYYYMMDD_XXXXXX_<slug>
+     * Also supports legacy format: task_YYYYMMDD_HHmmssfff_XXXXXX_<slug>
      * Returns empty string if the ID doesn't match the expected format.
      */
     static extractSlugFromId(id: string): string {
-        // Split on underscores: task, YYYYMMDD, HHmmssfff, XXXXXX, ...slug parts
         const parts = id.split('_');
-        // Minimum: task + date + time + uuid + at least one slug part = 5 parts
-        if (parts.length < 5 || parts[0] !== 'task') { return ''; }
-        return parts.slice(4).join('_');
+        if (parts.length < 4 || parts[0] !== 'task') { return ''; }
+        // New format: task_YYYYMMDD_XXXXXX_slug... (date is 8 digits, uuid is 6 alnum)
+        // Legacy format: task_YYYYMMDD_HHmmssfff_XXXXXX_slug... (time is 9 digits)
+        if (parts.length >= 5 && /^\d{9}$/.test(parts[2])) {
+            // Legacy format — skip date, time, uuid
+            return parts.slice(4).join('_');
+        }
+        // New format — skip date, uuid
+        return parts.slice(3).join('_');
     }
 
     /**
@@ -422,11 +531,11 @@ export class TaskStore {
 
     /**
      * Serialise a task to markdown with YAML frontmatter.
-     * Lane is NOT included — determined by directory.
      */
     static serialise(task: Task, body?: string): string {
         const frontmatter: Record<string, unknown> = {
             title: task.title,
+            lane: task.lane,
             created: task.created,
             updated: task.updated,
         };
@@ -466,7 +575,6 @@ export class TaskStore {
     /**
      * Deserialise a markdown file with YAML frontmatter into a Task.
      * Returns null if the frontmatter is missing or invalid.
-     * Lane is NOT read from frontmatter — caller sets it from directory name.
      */
     static deserialise(text: string): Task | null {
         const parsed = TaskStore.splitFrontmatter(text);
@@ -481,7 +589,7 @@ export class TaskStore {
             return {
                 id: '', // Caller sets this from filename
                 title: data.title,
-                lane: '', // Caller sets this from directory name
+                lane: typeof data.lane === 'string' ? data.lane : '',
                 created: (data.created as string) ?? new Date().toISOString(),
                 updated: (data.updated as string) ?? new Date().toISOString(),
                 description: (data.description as string) ?? '',

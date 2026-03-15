@@ -34,8 +34,8 @@ describe('TaskStore', () => {
     describe('generateId', () => {
         it('should generate ID in expected format', () => {
             const id = TaskStore.generateId(new Date(), 'Test Task');
-            // Format: task_YYYYMMDD_HHmmssfff_XXXXXX_slugified_title
-            expect(id).toMatch(/^task_\d{8}_\d{9}_[a-z0-9]{6}_test_task$/);
+            // Format: task_YYYYMMDD_XXXXXX_slugified_title
+            expect(id).toMatch(/^task_\d{8}_[a-z0-9]{6}_test_task$/);
         });
 
         it('should include task prefix and slug', () => {
@@ -102,8 +102,8 @@ describe('TaskStore', () => {
 
             expect(result).not.toBeNull();
             expect(result!.title).toBe(task.title);
-            // lane is not serialised — determined by directory
-            expect(result!.lane).toBe('');
+            // lane IS serialised to frontmatter
+            expect(result!.lane).toBe('todo');
             expect(result!.created).toBe(task.created);
             expect(result!.updated).toBe(task.updated);
             expect(result!.description).toBe(task.description);
@@ -123,8 +123,8 @@ describe('TaskStore', () => {
 
             expect(md.startsWith('---\n')).toBe(true);
             expect(md).toContain('title: YAML validity');
-            // lane is NOT written to frontmatter — determined by directory
-            expect(md).not.toMatch(/^lane:/m);
+            // lane IS written to frontmatter
+            expect(md).toMatch(/^lane:/m);
             expect(md).toContain('## Conversation');
         });
 
@@ -352,7 +352,7 @@ describe('TaskStore', () => {
             expect(result!.worktree).toBeUndefined();
         });
 
-        it('should not serialise lane to YAML (determined by directory)', () => {
+        it('should serialise lane to YAML frontmatter', () => {
             const task: Task = {
                 id: 'task_014',
                 title: 'Lane case test',
@@ -362,14 +362,13 @@ describe('TaskStore', () => {
                 description: '',
             };
             const md = TaskStore.serialise(task);
-            expect(md).not.toMatch(/^lane:/m);
+            expect(md).toMatch(/^lane: doing$/m);
         });
 
-        it('should set lane to empty string on deserialise (caller populates)', () => {
+        it('should read lane from frontmatter on deserialise', () => {
             const md = '---\ntitle: Test\nlane: DOING\ncreated: 2026-03-09T10:00:00.000Z\nupdated: 2026-03-09T10:00:00.000Z\n---\n';
             const result = TaskStore.deserialise(md);
-            // lane is ignored from frontmatter — caller sets it from directory name
-            expect(result!.lane).toBe('');
+            expect(result!.lane).toBe('DOING');
         });
     });
 
@@ -383,7 +382,7 @@ describe('TaskStore', () => {
             expect(TaskStore.deserialise(text)).toBeNull();
         });
 
-        it('should set lane to empty string (caller populates from directory)', () => {
+        it('should set lane to empty string when absent in frontmatter', () => {
             const text = '---\ntitle: Test\ncreated: "2026-03-08T10:00:00.000Z"\nupdated: "2026-03-08T10:00:00.000Z"\n---\n\n## Conversation\n';
             const task = TaskStore.deserialise(text);
             expect(task).not.toBeNull();
@@ -526,29 +525,33 @@ describe('TaskStore', () => {
     });
 
     describe('getTaskUri / getTodoUri', () => {
-        it('should construct task URI using lane subdirectory from cache', () => {
+        it('should construct task URI in flat tasks directory', () => {
             const uri = { scheme: 'file', fsPath: '/test', path: '/test', toString: () => '/test' } as any;
             const store = new TaskStore(uri);
 
-            // Add task to cache so URI uses its lane directory
             const task = store.createTask('Test', 'doing');
             (store as any).tasks.set(task.id, task);
 
             const taskUri = store.getTaskUri(task.id);
-            expect(taskUri.fsPath).toContain('doing');
+            expect(taskUri.fsPath).toContain('tasks');
+            expect(taskUri.fsPath).not.toContain('doing');
             expect(taskUri.fsPath).toContain(`${task.id}.md`);
         });
 
-        it('should fall back to todo directory when task not in cache', () => {
+        it('should return archive path for archived tasks', () => {
             const uri = { scheme: 'file', fsPath: '/test', path: '/test', toString: () => '/test' } as any;
             const store = new TaskStore(uri);
 
-            const taskUri = store.getTaskUri('task_20260308_143045123_abc123_test');
-            expect(taskUri.fsPath).toContain('todo');
-            expect(taskUri.fsPath).toContain('task_20260308_143045123_abc123_test.md');
+            const task = store.createTask('Test', 'doing');
+            (store as any).tasks.set(task.id, task);
+            (store as any)._archivedIds.add(task.id);
+
+            const taskUri = store.getTaskUri(task.id);
+            expect(taskUri.fsPath).toContain('archive');
+            expect(taskUri.fsPath).toContain(`${task.id}.md`);
         });
 
-        it('should construct todo URI using lane subdirectory from cache', () => {
+        it('should construct todo URI in flat tasks directory', () => {
             const uri = { scheme: 'file', fsPath: '/test', path: '/test', toString: () => '/test' } as any;
             const store = new TaskStore(uri);
 
@@ -556,17 +559,19 @@ describe('TaskStore', () => {
             (store as any).tasks.set(task.id, task);
 
             const todoUri = store.getTodoUri(task.id);
-            expect(todoUri.fsPath).toContain('doing');
+            expect(todoUri.fsPath).toContain('tasks');
+            expect(todoUri.fsPath).not.toContain('doing');
             expect(todoUri.fsPath).toContain('todo_');
         });
 
-        it('should fall back to todo directory for todo URI when task not in cache', () => {
+        it('should return flat path for task not in cache', () => {
             const uri = { scheme: 'file', fsPath: '/test', path: '/test', toString: () => '/test' } as any;
             const store = new TaskStore(uri);
 
-            const todoUri = store.getTodoUri('task_20260308_143045123_abc123_test');
-            expect(todoUri.fsPath).toContain('todo');
-            expect(todoUri.fsPath).toContain('todo_20260308_143045123_abc123_test.md');
+            const taskUri = store.getTaskUri('task_20260308_abc123_test');
+            expect(taskUri.fsPath).toContain('tasks');
+            expect(taskUri.fsPath).not.toContain('archive');
+            expect(taskUri.fsPath).toContain('task_20260308_abc123_test.md');
         });
     });
 
@@ -612,15 +617,13 @@ describe('TaskStore', () => {
 
             await store.moveTaskToLane(task.id, 'doing');
 
-            // Should write to new location
+            // Should write to same location (flat — no directory move)
             const newPath = writtenFiles.keys().next().value;
-            expect(newPath).toContain('/doing/');
+            expect(newPath).toContain('tasks');
             expect(newPath).toContain(`${task.id}.md`);
 
-            // Should delete old file
-            expect(deletedPaths.length).toBe(1);
-            expect(deletedPaths[0]).toContain('/todo/');
-            expect(deletedPaths[0]).toContain(`${task.id}.md`);
+            // Should NOT delete old file (same location, overwrite)
+            expect(deletedPaths.length).toBe(0);
 
             // In-memory lane should be updated
             expect(store.get(task.id)!.lane).toBe('doing');
@@ -707,16 +710,25 @@ describe('TaskStore', () => {
     });
 
     describe('extractSlugFromId', () => {
-        it('should extract slug from standard task ID', () => {
+        it('should extract slug from new format task ID', () => {
+            expect(TaskStore.extractSlugFromId('task_20260311_4auczp_my_task')).toBe('my_task');
+        });
+
+        it('should extract slug from legacy format task ID', () => {
             expect(TaskStore.extractSlugFromId('task_20260311_085243300_4auczp_my_task')).toBe('my_task');
         });
 
-        it('should extract multi-word slug', () => {
+        it('should extract multi-word slug from legacy format', () => {
             expect(TaskStore.extractSlugFromId('task_20260311_085243300_abc123_consider_git_worktree_based_flows'))
                 .toBe('consider_git_worktree_based_flows');
         });
 
-        it('should extract single-word slug', () => {
+        it('should extract multi-word slug from new format', () => {
+            expect(TaskStore.extractSlugFromId('task_20260311_abc123_consider_git_worktree'))
+                .toBe('consider_git_worktree');
+        });
+
+        it('should extract single-word slug from legacy format', () => {
             expect(TaskStore.extractSlugFromId('task_20260311_085243300_abc123_test')).toBe('test');
         });
 
@@ -820,6 +832,27 @@ describe('TaskStore', () => {
             const results = ts.findByTitle('gitworktree');
             expect(results).toHaveLength(1);
             expect(results[0].title).toBe('Consider Git Worktree');
+        });
+    });
+
+    describe('migrateFileName', () => {
+        it('should convert legacy task filename to new format', () => {
+            expect(TaskStore.migrateFileName('task_20260315_085316225_hwsri7_my_task.md'))
+                .toBe('task_20260315_hwsri7_my_task.md');
+        });
+
+        it('should convert legacy todo filename to new format', () => {
+            expect(TaskStore.migrateFileName('todo_20260315_085316225_hwsri7_my_task.md'))
+                .toBe('todo_20260315_hwsri7_my_task.md');
+        });
+
+        it('should leave new format filenames unchanged', () => {
+            expect(TaskStore.migrateFileName('task_20260315_hwsri7_my_task.md'))
+                .toBe('task_20260315_hwsri7_my_task.md');
+        });
+
+        it('should leave non-task filenames unchanged', () => {
+            expect(TaskStore.migrateFileName('README.md')).toBe('README.md');
         });
     });
 });
