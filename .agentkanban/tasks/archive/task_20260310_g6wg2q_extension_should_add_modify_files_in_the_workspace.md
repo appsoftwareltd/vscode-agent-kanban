@@ -1,10 +1,12 @@
 ---
 title: Extension should add modify files in the workspace until initialised
+lane: done
 created: 2026-03-10T18:39:35.963Z
-updated: 2026-03-10T20:25:45.569Z
+updated: 2026-03-15T14:07:31.107Z
 description: The extension should not immediately add or modify meta data files (.agentkanban, AGENTS.md, task folder structure - anything) until the user has ran an initialise command
 priority: critical
 sortOrder: 1773042102151
+slug: extension_should_add_modify_files_in_the_workspace
 ---
 
 ## Conversation

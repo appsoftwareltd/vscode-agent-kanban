@@ -1,7 +1,8 @@
 ---
 title: Task editor modal bug
+lane: done
 created: 2026-03-10T15:20:01.291Z
-updated: 2026-03-10T16:25:03.824Z
+updated: 2026-03-15T14:08:32.250Z
 description: |-
   The task editor modal will close if any mouse event occurs outside its boundary.
 
@@ -9,8 +10,9 @@ description: |-
   - A confirm dialogue should be displayed before closing without saving changes
   - The cancel button still closes
 priority: critical
-sortOrder: 1
+slug: task_editor_modal_bug
 ---
+
 
 ## Conversation
 

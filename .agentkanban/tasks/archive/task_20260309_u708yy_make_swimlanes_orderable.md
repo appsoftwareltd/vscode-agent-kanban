@@ -2,7 +2,8 @@
 title: Make swimlanes orderable
 lane: done
 created: 2026-03-09T07:41:42.152Z
-updated: 2026-03-09T20:05:48.648Z
+updated: 2026-03-15T14:08:03.353Z
+slug: make_swimlanes_orderable
 ---
 
 ## Conversation

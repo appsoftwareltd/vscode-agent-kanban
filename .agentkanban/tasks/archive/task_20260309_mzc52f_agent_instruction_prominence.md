@@ -1,8 +1,10 @@
 ---
 title: Agent Instruction Prominence
+lane: done
 created: 2026-03-09T21:57:47.108Z
-updated: 2026-03-10T09:12:55.053Z
+updated: 2026-03-15T14:08:11.153Z
 sortOrder: 1773042589447.25
+slug: agent_instruction_prominence
 ---
 
 ## Conversation

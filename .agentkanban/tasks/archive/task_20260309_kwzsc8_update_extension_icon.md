@@ -2,7 +2,8 @@
 title: Update extension icon
 lane: done
 created: 2026-03-09T08:48:53.247Z
-updated: 2026-03-09T20:05:41.223Z
+updated: 2026-03-15T14:08:18.113Z
+slug: update_extension_icon
 ---
 
 ## Conversation

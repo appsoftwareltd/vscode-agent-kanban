@@ -2,7 +2,8 @@
 title: Remove agentKanban.userName setting
 lane: done
 created: 2026-03-09T09:05:28.419Z
-updated: 2026-03-09T10:58:37.169Z
+updated: 2026-03-15T14:08:23.416Z
+slug: remove_agentkanban_username_setting
 ---
 
 ## Conversation

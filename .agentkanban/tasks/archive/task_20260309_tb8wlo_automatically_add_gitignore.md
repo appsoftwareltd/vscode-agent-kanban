@@ -2,7 +2,8 @@
 title: Automatically add .gitignore
 lane: done
 created: 2026-03-09T08:03:21.606Z
-updated: 2026-03-09T20:05:47.048Z
+updated: 2026-03-15T14:08:14.184Z
+slug: automatically_add_gitignore
 ---
 
 ## Conversation

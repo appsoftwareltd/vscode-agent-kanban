@@ -2,7 +2,8 @@
 title: Setting for custom AGENT instruction file
 lane: done
 created: 2026-03-09T08:51:30.721Z
-updated: 2026-03-09T20:05:45.598Z
+updated: 2026-03-15T14:08:19.831Z
+slug: setting_for_custom_agent_instruction_file
 ---
 
 ## Conversation

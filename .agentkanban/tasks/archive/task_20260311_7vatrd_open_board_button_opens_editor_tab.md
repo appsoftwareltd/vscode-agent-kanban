@@ -1,11 +1,13 @@
 ---
 title: Open board button opens editor tab
+lane: done
 created: 2026-03-11T10:16:14.213Z
-updated: 2026-03-11T13:34:52.395Z
+updated: 2026-03-15T14:07:50.154Z
 description: I find my self clicking one then the other, so link them
 labels:
   - "easy\r"
 sortOrder: 1773042102151.5
+slug: open_board_button_opens_editor_tab
 ---
 
 

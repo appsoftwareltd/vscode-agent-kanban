@@ -1,14 +1,16 @@
 ---
 title: Revert to single directory + archived folder
+lane: done
 created: 2026-03-15T08:53:16.225Z
-updated: 2026-03-15T08:53:40.705Z
-sortOrder: 1773309353061
+updated: 2026-03-15T14:09:13.444Z
+sortOrder: 2
 slug: revert_to_single_directory_archived_folder
 worktree:
   branch: agentkanban/20260315_085316225_hwsri7_revert_to_single_directory_archived_folder
   path: c:\Users\Gareth\src\vscode-agent-kanban-worktrees\20260315_085316225_hwsri7_revert_to_single_directory_archived_folder
-  created: 2026-03-15T08:53:40.705Z
+  created: "2026-03-15T08:53:40.705Z\r"
 ---
+
 
 ## Conversation
 

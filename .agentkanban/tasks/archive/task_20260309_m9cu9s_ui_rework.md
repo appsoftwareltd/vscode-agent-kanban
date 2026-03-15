@@ -1,8 +1,10 @@
 ---
 title: UI Rework
+lane: done
 created: 2026-03-09T14:13:17.829Z
-updated: 2026-03-10T09:13:07.182Z
+updated: 2026-03-15T14:08:05.506Z
 sortOrder: 1773042183367.875
+slug: ui_rework
 ---
 
 ## Conversation

@@ -1,5 +1,6 @@
 ---
 title: Integration with other agent harnesses
+lane: todo
 created: 2026-03-09T10:59:08.948Z
 updated: 2026-03-10T09:13:31.351Z
 priority: medium

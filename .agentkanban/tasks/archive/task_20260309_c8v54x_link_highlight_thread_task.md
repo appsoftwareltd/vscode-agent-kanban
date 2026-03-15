@@ -1,8 +1,10 @@
 ---
 title: Link Highlight Thread Task
+lane: done
 created: 2026-03-09T09:12:07.711Z
-updated: 2026-03-10T09:12:45.078Z
+updated: 2026-03-15T14:08:12.571Z
 sortOrder: 1773042751879
+slug: link_highlight_thread_task
 ---
 
 ## Conversation

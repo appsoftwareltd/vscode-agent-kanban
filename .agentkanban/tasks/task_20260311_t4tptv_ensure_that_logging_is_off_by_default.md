@@ -1,5 +1,6 @@
 ---
 title: Ensure that logging is off by default
+lane: doing
 created: 2026-03-11T08:51:01.595Z
 updated: 2026-03-11T11:39:07.910Z
 sortOrder: 1

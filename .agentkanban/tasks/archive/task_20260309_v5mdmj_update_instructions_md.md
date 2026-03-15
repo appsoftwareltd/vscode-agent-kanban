@@ -2,7 +2,8 @@
 title: Update INSTRUCTIONS.md
 lane: done
 created: 2026-03-09T08:33:41.928Z
-updated: 2026-03-09T20:05:42.572Z
+updated: 2026-03-15T14:08:15.878Z
+slug: update_instructions_md
 ---
 
 ## Conversation

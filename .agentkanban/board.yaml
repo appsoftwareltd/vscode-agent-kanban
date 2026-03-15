@@ -2,7 +2,6 @@ lanes:
   - todo
   - doing
   - done
-  - planned
 basePrompt: ""
 users:
   - Gareth

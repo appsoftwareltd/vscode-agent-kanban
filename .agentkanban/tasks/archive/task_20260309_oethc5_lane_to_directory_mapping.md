@@ -1,8 +1,10 @@
 ---
 title: Lane to directory mapping
+lane: done
 created: 2026-03-09T17:35:10.283Z
-updated: 2026-03-10T09:13:04.977Z
+updated: 2026-03-15T14:08:07.238Z
 sortOrder: 1773042264583.75
+slug: lane_to_directory_mapping
 ---
 
 ## Conversation
