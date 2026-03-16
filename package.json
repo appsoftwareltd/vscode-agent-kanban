@@ -2,7 +2,7 @@
     "name": "vscode-agent-kanban",
     "displayName": "VS Code Agent Kanban",
     "description": "An integrated Kanban board for managing coding agent tasks with persistent, version-controllable markdown conversations.",
-    "version": "2.1.1",
+    "version": "2.1.0",
     "publisher": "appsoftwareltd",
     "license": "Elastic-2.0",
     "icon": "images/icon.png",
@@ -90,6 +90,12 @@
                     ],
                     "default": "current",
                     "description": "Whether to open worktrees in the current window or a new window.",
+                    "scope": "resource"
+                },
+                "agentKanban.enforceWorktrees": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Require a git worktree before using /refresh. When enabled, the command prompts to create a worktree if one doesn't exist.",
                     "scope": "resource"
                 }
             }

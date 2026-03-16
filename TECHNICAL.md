@@ -329,6 +329,7 @@ If a task file (`.agentkanban/tasks/**/*.md`) was referenced earlier in this con
 Read the task file above before responding.
 Read `.agentkanban/INSTRUCTION.md` for task workflow rules.
 Read `.agentkanban/memory.md` for project context.
+IMPORTANT: ALWAYS respond in the task file.
 <!-- END AGENT KANBAN -->
 ```
 

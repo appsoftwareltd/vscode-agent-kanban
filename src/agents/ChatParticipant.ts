@@ -48,6 +48,7 @@ export function buildWorktreeAgentsMdSection(taskTitle: string, taskRelPath: str
         'Read the task file above before responding.',
         'Read `.agentkanban/INSTRUCTION.md` for task workflow rules.',
         'Read `.agentkanban/memory.md` for project context.',
+        'IMPORTANT: ALWAYS respond in the task file.',
         AGENTS_MD_END,
     );
     return lines.join('\n');

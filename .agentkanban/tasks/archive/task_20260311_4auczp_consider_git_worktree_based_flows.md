@@ -73,6 +73,7 @@ When a worktree is created for a task, the sentinel in *that worktree* becomes r
 Read the task file above before responding.
 Read `.agentkanban/INSTRUCTION.md` for task workflow rules.
 Read `.agentkanban/memory.md` for project context.
+IMPORTANT: ALWAYS respond in the task file.
 <!-- END AGENT KANBAN -->
 ```
 
