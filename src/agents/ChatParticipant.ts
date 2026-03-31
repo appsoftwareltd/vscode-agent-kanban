@@ -24,7 +24,7 @@ const AGENTS_MD_SECTION = [
     'Read `.agentkanban/INSTRUCTION.md` for task workflow rules.',
     'Read `.agentkanban/memory.md` for project context.',
     '',
-    'If a task file (`.agentkanban/tasks/**/*.md`) was referenced earlier in this conversation, re-read it before responding.',
+    'If a task file (`.agentkanban/tasks/**/*.md`) was referenced earlier in this conversation, re-read it before responding and always respond in and at the end the task file.',
     AGENTS_MD_END,
 ].join('\n');
 
@@ -48,7 +48,7 @@ export function buildWorktreeAgentsMdSection(taskTitle: string, taskRelPath: str
         'Read the task file above before responding.',
         'Read `.agentkanban/INSTRUCTION.md` for task workflow rules.',
         'Read `.agentkanban/memory.md` for project context.',
-        'IMPORTANT: ALWAYS respond in the task file.',
+        'IMPORTANT: ALWAYS respond in and at the end of the task file.',
         AGENTS_MD_END,
     );
     return lines.join('\n');

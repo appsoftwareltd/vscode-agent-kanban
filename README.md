@@ -10,7 +10,7 @@ A VS Code extension providing an integrated Kanban board and the formalisation o
 
 > **The key concept: A `plan` / `todo` / `implement` workflow with markdown files that form a permanent record of design choices and actions makes for a robust 'human-in-the-loop' workflow that produces high quality agent assisted code implementations, even on long complex problems.**
 
-Task files are designed to be version control friendly, so they can be shared with your team. 
+Task files are designed to be version control friendly, so they can be shared with your team.
 
 Agent Kanban references its own instruction set, so it doesn't interfere with your existing agent files (e.g. AGENTS.md, skills etc).
 
@@ -251,8 +251,8 @@ npx @vscode/vsce publish
 
 # 3. Tag and push
 git add .
-git commit -m "Release v2.1.1"
-git tag v2.1.1
+git commit -m "Release v2.1.2"
+git tag v2.1.2
 git push origin main --tags
 ```
 

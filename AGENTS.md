@@ -26,6 +26,8 @@ If you need more tools to help you test autonomously, ask.
 
 Important: Use red/green/refactor TDD. Write failing tests according to requirements first, and then iterate until your solution makes the tests pass.
 
+Don't use em dashes `—` in any copy, anywhere (UIs or documentation).
+
 <!-- BEGIN AGENT KANBAN — DO NOT EDIT THIS SECTION -->
 ## Agent Kanban
 
