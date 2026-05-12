@@ -2,6 +2,10 @@
 
 All notable changes to AS Notes will be documented here.
 
+## [2.1.3] - 2026-05-12
+
+- Documentation
+
 ## [2.0.0] - 2026-03-12
 
 - Major change to support Git worktree based workflows, leveraging VS Code support for Git worktrees

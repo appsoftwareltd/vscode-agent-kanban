@@ -1,3 +1,9 @@
+# UPDATED Version: [https://agentkanban.io](https://agentkanban.io)
+
+**A new version of **[AgentKanban](https://agentkanban.io)** is now available at **[https://agentkanban.io](https://agentkanban.io)**. The new version has improved remote task boards for separating task management from your local files and collaborating in teams with realtime sync. A new companion extension ([VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=appsoftwareltd.agent-kanban-vscode) / [Open VSX Registry](https://open-vsx.org/extension/appsoftwareltd/agent-kanban-vscode)) connects to your boards using an [API key](https://www.agentkanban.io/settings/api-keys). Optional PLAN / TODO / IMPLEMENT and Git worktrees are included in the new version, along with better agent instruction management and task binding for a more robust workflow.**
+
+This extension will remain available and free to use for local-only workflows.
+
 # VS Code Agent Kanban
 
 By [appsoftware.com](https://www.appsoftware.com)
@@ -251,8 +257,8 @@ npx @vscode/vsce publish
 
 # 3. Tag and push
 git add .
-git commit -m "Release v2.1.2"
-git tag v2.1.2
+git commit -m "Release v2.1.3"
+git tag v2.1.3
 git push origin main --tags
 ```
 
